@@ -20,7 +20,11 @@ import Foundation
 /// Requires Accessibility permission. If the tap fails to register, callers
 /// will see an error from `start()`.
 final class HotkeyMonitor {
-    enum Event { case start, stop }
+    /// `.start` begins recording, `.stop` ends it. `.lock` is a UI-only hint
+    /// that a double-tap just latched the session into hands-free mode —
+    /// recording is already running and continues; callers use it to surface
+    /// the "tap to stop" affordance.
+    enum Event { case start, lock, stop }
     enum HotkeyError: Error { case tapCreateFailed }
 
     /// Mask of the modifier we treat as the hotkey. Fn = `.maskSecondaryFn`.
@@ -213,8 +217,10 @@ final class HotkeyMonitor {
         case .secondTap:
             if now - pressDownTime < holdThreshold {
                 // Two quick taps → latch into hands-free. Recording continues
-                // untouched; the next tap will stop it.
+                // untouched; the next tap will stop it. Emit `.lock` so the UI
+                // can show that we're now hands-free.
                 phase = .latched
+                onEvent?(.lock)
             } else {
                 // The second press was actually held — behave like push-to-talk
                 // and transcribe what we have.

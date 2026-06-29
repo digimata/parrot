@@ -107,6 +107,14 @@ struct Run: ParsableCommand {
                     } catch {
                         FileHandle.standardError.write(Data("capture failed: \(error)\n".utf8))
                     }
+                case .lock:
+                    // Double-tap latched the session. Recording is already
+                    // running; just surface the hands-free affordance.
+                    FileHandle.standardError.write(Data("⊚ hands-free · tap fn to stop\n".utf8))
+                    MainActor.assumeIsolated {
+                        overlay?.show(.recording)
+                        menuBar.setLocked()
+                    }
                 case .stop:
                     let samples = capture.stop()
                     MainActor.assumeIsolated {

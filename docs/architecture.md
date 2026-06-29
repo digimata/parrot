@@ -80,7 +80,7 @@ Global hotkey via `CGEventTap` (requires Accessibility permission). Default: **h
 A small gesture state machine turns raw key edges into recording lifecycle events, emitting a uniform `.start` / `.stop` pair so downstream modules don't care which gesture fired:
 
 - **Push-to-talk** (always on): `.start` on key-down, `.stop` on release. Key-down still starts recording immediately, so push-to-talk latency is unchanged.
-- **Hands-free latch** (`--no-handsfree` to disable): a quick **double-tap** latches recording on and keeps the mic hot after the key is released; the **next tap** emits `.stop`. The machine distinguishes a tap from a hold by press duration (`holdThreshold`) and pairs taps within `doubleTapWindow`. This is an explicit gesture, not VAD — idle CPU is still zero until you tap.
+- **Hands-free latch** (`--no-handsfree` to disable): a quick **double-tap** latches recording on and keeps the mic hot after the key is released; the **next tap** emits `.stop`. The machine distinguishes a tap from a hold by press duration (`holdThreshold`) and pairs taps within `doubleTapWindow`. This is an explicit gesture, not VAD — idle CPU is still zero until you tap. On latch it also emits a UI-only `.lock` event so the overlay/menu bar can show the "tap to stop" affordance.
 
 If the system disables the tap (`tapDisabledByTimeout` / `tapDisabledByUserInput`), the callback re-enables it so a long latched session can't silently go deaf.
 

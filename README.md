@@ -30,7 +30,7 @@ Holding a key is awkward for anything longer than a sentence. So `fn` does doubl
 - **Hold** `fn` — push-to-talk, exactly as above. Best for quick dictation.
 - **Double-tap** `fn` — starts recording and *keeps it running* after you let go. Speak as long as you like, hands free. **Tap `fn` once more to stop** and insert the transcript.
 
-The recording pill stays up the whole time you're latched, so you always know the mic is hot. Prefer the old hold-only behavior? Run with `--no-handsfree`.
+The recording pill stays up the whole time you're latched, and the menu bar reads **● hands-free · tap fn to stop**, so you always know the mic is hot. Prefer the old hold-only behavior? Run with `--no-handsfree`.
 
 > **Note:** on most modern Macs the `fn` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," `parrot setup` will tell you how to flip it back to plain `fn`.
 

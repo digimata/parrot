@@ -43,6 +43,10 @@ final class MenuBarController {
         stateLabel.title = recording ? "● recording" : "idle · hold or double-tap fn"
     }
 
+    func setLocked() {
+        stateLabel.title = "● hands-free · tap fn to stop"
+    }
+
     func setTranscribing() {
         stateLabel.title = "transcribing…"
     }
