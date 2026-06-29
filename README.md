@@ -23,6 +23,15 @@ The installer drops the binary in `/usr/local/bin/parrot`. Builds are unsigned f
 
 That's it. There is no record button, no stop button, no "send" — `fn` is the whole interface.
 
+### Hands-free mode
+
+Holding a key is awkward for anything longer than a sentence. So `fn` does double duty:
+
+- **Hold** `fn` — push-to-talk, exactly as above. Best for quick dictation.
+- **Double-tap** `fn` — starts recording and *keeps it running* after you let go. Speak as long as you like, hands free. **Tap `fn` once more to stop** and insert the transcript.
+
+The recording pill stays up the whole time you're latched, so you always know the mic is hot. Prefer the old hold-only behavior? Run with `--no-handsfree`.
+
 > **Note:** on most modern Macs the `fn` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," `parrot setup` will tell you how to flip it back to plain `fn`.
 
 ## CLI
@@ -38,6 +47,7 @@ parrot models download <id>            # pre-download a model
 parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
 parrot --hotkey right-option           # change the push-to-talk key
 parrot --no-overlay                    # disable the bottom-of-screen pill
+parrot --no-handsfree                  # disable double-tap latch (pure push-to-talk)
 ```
 
 ## Stack

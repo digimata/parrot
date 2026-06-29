@@ -75,7 +75,14 @@ Subcommands:
 
 ### `HotkeyMonitor`
 
-Global hotkey via `CGEventTap` (requires Accessibility permission). Default: **hold Fn**. Detected via `flagsChanged` events with `NSEvent.ModifierFlags.function` / `kCGEventFlagMaskSecondaryFn`. Emits `.pressed` / `.released`. Configurable via `--hotkey` flag or config file.
+Global hotkey via `CGEventTap` (requires Accessibility permission). Default: **hold Fn**. Detected via `flagsChanged` events with `NSEvent.ModifierFlags.function` / `kCGEventFlagMaskSecondaryFn`. Configurable via `--hotkey` flag or config file.
+
+A small gesture state machine turns raw key edges into recording lifecycle events, emitting a uniform `.start` / `.stop` pair so downstream modules don't care which gesture fired:
+
+- **Push-to-talk** (always on): `.start` on key-down, `.stop` on release. Key-down still starts recording immediately, so push-to-talk latency is unchanged.
+- **Hands-free latch** (`--no-handsfree` to disable): a quick **double-tap** latches recording on and keeps the mic hot after the key is released; the **next tap** emits `.stop`. The machine distinguishes a tap from a hold by press duration (`holdThreshold`) and pairs taps within `doubleTapWindow`. This is an explicit gesture, not VAD — idle CPU is still zero until you tap.
+
+If the system disables the tap (`tapDisabledByTimeout` / `tapDisabledByUserInput`), the callback re-enables it so a long latched session can't silently go deaf.
 
 **Fn key caveat:** macOS by default maps the Fn (🌐) key to "Show Emoji & Symbols" or "Start Dictation" depending on the user's setting in System Settings → Keyboard → Press 🌐 key to. The CGEventTap sees the keypress regardless, but the system action also fires. `parrot doctor` will detect this setting and instruct the user to change it to "Do Nothing" so Fn becomes a clean modifier.
 
@@ -118,7 +125,7 @@ Content: a small SwiftUI view hosted via `NSHostingView`, showing a pulsing dot 
 
 States:
 - **Hidden** — idle. No window on screen.
-- **Recording** — shown on `.pressed`, mic level animated.
+- **Recording** — shown on `.start`, mic level animated.
 - **Transcribing** — brief spinner state between hotkey release and text injection (usually <500 ms).
 - **Hidden** — back to idle after injection.
 
@@ -198,10 +205,10 @@ Models live in `~/Library/Application Support/parrot/models/`. Not bundled — f
 2. `ParrotCLI` validates permissions (`parrot doctor` logic), loads config, instantiates modules.
 3. Sets `.accessory` activation policy and enters `NSApp.run()`. Status: `listening`. Overlay hidden.
 4. User holds Fn.
-5. `HotkeyMonitor` fires `.pressed`. `RecordingOverlay` shows. Status: `recording`.
+5. `HotkeyMonitor` fires `.start` (Fn held, or double-tapped to latch). `RecordingOverlay` shows. Status: `recording`.
 6. `AudioCapture` starts the AVAudioEngine tap. Buffers fill. Overlay animates mic level.
 7. User releases Fn.
-8. `HotkeyMonitor` fires `.released`. Overlay switches to spinner. Status: `transcribing`.
+8. `HotkeyMonitor` fires `.stop` (Fn released, or tapped to end a latched session). Overlay switches to spinner. Status: `transcribing`.
 9. `AudioCapture` stops, hands buffer to active `Transcriber`.
 10. `Transcriber` runs CoreML inference. Returns string.
 11. `TextInjector` posts the string at the cursor.

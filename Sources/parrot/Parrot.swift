@@ -31,6 +31,9 @@ struct Run: ParsableCommand {
     @Flag(name: .long, help: "Disable the on-screen recording overlay.")
     var noOverlay: Bool = false
 
+    @Flag(name: .long, help: "Disable double-tap-to-latch hands-free mode (pure push-to-talk).")
+    var noHandsfree: Bool = false
+
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
 
@@ -81,7 +84,7 @@ struct Run: ParsableCommand {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        let monitor = HotkeyMonitor(debug: debugHotkey)
+        let monitor = HotkeyMonitor(handsFree: !noHandsfree, debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
         let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
@@ -93,7 +96,7 @@ struct Run: ParsableCommand {
         do {
             try monitor.start { event in
                 switch event {
-                case .pressed:
+                case .start:
                     do {
                         try capture.start()
                         FileHandle.standardError.write(Data("● recording\n".utf8))
@@ -104,7 +107,7 @@ struct Run: ParsableCommand {
                     } catch {
                         FileHandle.standardError.write(Data("capture failed: \(error)\n".utf8))
                     }
-                case .released:
+                case .stop:
                     let samples = capture.stop()
                     MainActor.assumeIsolated {
                         overlay?.show(.transcribing)
@@ -169,7 +172,8 @@ struct Run: ParsableCommand {
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
+        let gesture = noHandsfree ? "fn hold" : "fn hold · double-tap fn to latch"
+        FileHandle.standardError.write(Data("listening on \(gesture) · model: \(chosenModel.id) · ^C to quit\n".utf8))
         app.run()
     }
 }
