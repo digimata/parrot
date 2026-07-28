@@ -33,6 +33,7 @@ parrot setup                           # one-time setup: permissions + model dow
 parrot install --launch-at-login       # register a LaunchAgent (background daemon)
 parrot install --uninstall             # remove the LaunchAgent
 parrot doctor                          # check permissions + fn key setting
+parrot --model apple-speech            # macOS 26 local SpeechAnalyzer
 parrot models list                     # list available models
 parrot models download <id>            # pre-download a model
 parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
@@ -43,6 +44,7 @@ parrot --no-overlay                    # disable the bottom-of-screen pill
 ## Stack
 
 - **Swift** — single SPM executable target
+- **SpeechAnalyzer** — system-managed local speech recognition on macOS 26+
 - **WhisperKit** — Whisper inference via CoreML, ANE-accelerated
 - **AVAudioEngine** — mic capture
 - **CGEventTap** — global hotkey

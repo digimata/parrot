@@ -31,7 +31,7 @@ struct Run: ParsableCommand {
     @Flag(name: .long, help: "Disable the on-screen recording overlay.")
     var noOverlay: Bool = false
 
-    @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
+    @Option(name: .long, help: "Model id to use. Use apple-speech for the system model; defaults to the recommended Whisper model.")
     var model: String?
 
     func run() throws {
@@ -45,23 +45,32 @@ struct Run: ParsableCommand {
             }
         }
 
-        let chosenModel: TranscriptionModel
-        if let id = model {
-            guard let m = ModelRegistry.find(id) else {
-                FileHandle.standardError.write(Data("unknown model: \(id)\n".utf8))
-                FileHandle.standardError.write(Data("run `parrot models list` to see options.\n".utf8))
+        let transcriber: any Transcriber
+        if model == SystemModel.appleSpeech.rawValue {
+            guard #available(macOS 26.0, *) else {
+                FileHandle.standardError.write(Data("apple-speech requires macOS 26 or newer\n".utf8))
                 throw ExitCode(1)
             }
-            chosenModel = m
+            transcriber = AppleSpeechTranscriber()
         } else {
-            guard let m = ModelRegistry.recommended() else {
-                FileHandle.standardError.write(Data("no models registered\n".utf8))
-                throw ExitCode(1)
+            let chosenModel: TranscriptionModel
+            if let id = model {
+                guard let found = ModelRegistry.find(id) else {
+                    FileHandle.standardError.write(Data("unknown model: \(id)\n".utf8))
+                    FileHandle.standardError.write(Data("run `parrot models list` to see options.\n".utf8))
+                    throw ExitCode(1)
+                }
+                chosenModel = found
+            } else {
+                guard let recommended = ModelRegistry.recommended() else {
+                    FileHandle.standardError.write(Data("no models registered\n".utf8))
+                    throw ExitCode(1)
+                }
+                chosenModel = recommended
             }
-            chosenModel = m
+            transcriber = WhisperKitTranscriber(model: chosenModel)
         }
-
-        let transcriber = WhisperKitTranscriber(model: chosenModel)
+        let activeModelID = transcriber.modelID
         let warmupSemaphore = DispatchSemaphore(value: 0)
         var warmupError: Error?
         Task.detached {
@@ -88,7 +97,7 @@ struct Run: ParsableCommand {
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
-        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
+        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: activeModelID) }
 
         do {
             try monitor.start { event in
@@ -169,7 +178,7 @@ struct Run: ParsableCommand {
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
+        FileHandle.standardError.write(Data("listening on fn hold · model: \(activeModelID) · ^C to quit\n".utf8))
         app.run()
     }
 }
@@ -196,6 +205,7 @@ struct Models: ParsableCommand {
 
     struct List: ParsableCommand {
         func run() throws {
+            print("  apple-speech               system  [local]    Apple SpeechAnalyzer")
             for m in ModelRegistry.shared {
                 let star = m.recommended ? "★" : " "
                 let id = m.id.padding(toLength: 26, withPad: " ", startingAt: 0)
@@ -211,6 +221,10 @@ struct Models: ParsableCommand {
         @Argument(help: "Model id to download.") var id: String
 
         func run() throws {
+            if id == SystemModel.appleSpeech.rawValue {
+                print("apple-speech uses a system-managed model; run parrot --model apple-speech")
+                return
+            }
             guard let m = ModelRegistry.find(id) else {
                 print("unknown model: \(id)")
                 throw ExitCode(1)
