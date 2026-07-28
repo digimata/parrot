@@ -13,6 +13,9 @@ struct Parrot: ParsableCommand {
     )
 }
 
+extension HotkeyMonitor.Hotkey: ExpressibleByArgument {}
+extension TextInjector.Mode: ExpressibleByArgument {}
+
 struct Run: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "run",
@@ -33,6 +36,25 @@ struct Run: ParsableCommand {
 
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
+
+    @Option(
+        name: .long,
+        help: ArgumentHelp(
+            "Push-to-talk modifier to hold.",
+            discussion: "Third-party keyboards handle Fn in firmware and never send it to macOS; "
+                + "pick another modifier on those. Options: "
+                + HotkeyMonitor.Hotkey.allCases.map(\.rawValue).joined(separator: ", ")
+        ))
+    var hotkey: HotkeyMonitor.Hotkey = .fn
+
+    @Option(
+        name: .long,
+        help: ArgumentHelp(
+            "How the transcript is delivered to the focused app.",
+            discussion: "paste briefly uses the pasteboard and works in terminals and Electron "
+                + "apps; type-unicode leaves the pasteboard untouched but is dropped by some apps."
+        ))
+    var injectMode: TextInjector.Mode = .paste
 
     func run() throws {
         if !skipDoctor {
@@ -81,14 +103,16 @@ struct Run: ParsableCommand {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        let monitor = HotkeyMonitor(debug: debugHotkey)
+        let monitor = HotkeyMonitor(hotkey: hotkey, debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
         let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
-        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
+        let menuBar = MainActor.assumeIsolated {
+            MenuBarController(modelID: chosenModel.id, hotkeyLabel: hotkey.rawValue)
+        }
 
         do {
             try monitor.start { event in
@@ -140,7 +164,7 @@ struct Run: ParsableCommand {
                                 String(format: "→ %.2fs · %@\n", elapsed, text).utf8
                             ))
                             await MainActor.run {
-                                TextInjector.inject(text)
+                                TextInjector.inject(text, mode: injectMode)
                                 overlay?.hide()
                                 menuBar.setRecording(false)
                             }
@@ -169,7 +193,8 @@ struct Run: ParsableCommand {
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
+        FileHandle.standardError.write(
+            Data("listening on \(hotkey.rawValue) hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
         app.run()
     }
 }

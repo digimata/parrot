@@ -17,6 +17,12 @@ struct Install: ParsableCommand {
     @Flag(name: .long, help: "Remove the launch-at-login agent.")
     var uninstall: Bool = false
 
+    @Option(name: .long, help: "Push-to-talk modifier to bake into the agent.")
+    var hotkey: HotkeyMonitor.Hotkey = .fn
+
+    @Option(name: .long, help: "Injection mode to bake into the agent.")
+    var injectMode: TextInjector.Mode = .paste
+
     func run() throws {
         if launchAtLogin == uninstall {
             FileHandle.standardError.write(Data(
@@ -48,7 +54,11 @@ struct Install: ParsableCommand {
 
         let plist: [String: Any] = [
             "Label": Self.label,
-            "ProgramArguments": [binary, "run", "--skip-doctor"],
+            "ProgramArguments": [
+                binary, "run", "--skip-doctor",
+                "--hotkey", hotkey.rawValue,
+                "--inject-mode", injectMode.rawValue,
+            ],
             "RunAtLoad": true,
             "KeepAlive": ["SuccessfulExit": false] as [String: Any],
             "ProcessType": "Interactive",
