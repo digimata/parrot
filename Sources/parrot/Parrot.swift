@@ -222,7 +222,11 @@ struct Models: ParsableCommand {
 
         func run() throws {
             if id == SystemModel.appleSpeech.rawValue {
-                print("apple-speech uses a system-managed model; run parrot --model apple-speech")
+                print("""
+                apple-speech is managed by macOS; Parrot does not download it.
+                If its speech assets are missing, enable Dictation in System Settings > Keyboard.
+                Run parrot --model apple-speech to use it.
+                """)
                 return
             }
             guard let m = ModelRegistry.find(id) else {
