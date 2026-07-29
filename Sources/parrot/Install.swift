@@ -17,6 +17,9 @@ struct Install: ParsableCommand {
     @Flag(name: .long, help: "Remove the launch-at-login agent.")
     var uninstall: Bool = false
 
+    @Option(name: .long, help: "Model id for the launch-at-login daemon (for example, apple-speech).")
+    var model: String?
+
     func run() throws {
         if launchAtLogin == uninstall {
             FileHandle.standardError.write(Data(
@@ -45,10 +48,34 @@ struct Install: ParsableCommand {
 
     private func writeAgent() throws {
         let binary = try resolveBinaryPath()
+        var arguments = [binary, "run", "--skip-doctor"]
+        if let model {
+            guard model == SystemModel.appleSpeech.rawValue || ModelRegistry.find(model) != nil else {
+                FileHandle.standardError.write(Data(
+                    "unknown model: \(model)\nrun `parrot models list` to see options.\n".utf8
+                ))
+                throw ExitCode(64)
+            }
+            if model == SystemModel.appleSpeech.rawValue {
+                guard #available(macOS 26.3, *) else {
+                    FileHandle.standardError.write(Data(
+                        """
+                        launch-at-login with apple-speech requires macOS 26.3 or newer.
+                        On macOS 26.1–26.2, System Settings cannot reliably grant Accessibility
+                        access to the standalone parrot executable. Run
+                        `parrot --model apple-speech` from an authorized terminal instead.
+
+                        """.utf8
+                    ))
+                    throw ExitCode(1)
+                }
+            }
+            arguments.append(contentsOf: ["--model", model])
+        }
 
         let plist: [String: Any] = [
             "Label": Self.label,
-            "ProgramArguments": [binary, "run", "--skip-doctor"],
+            "ProgramArguments": arguments,
             "RunAtLoad": true,
             "KeepAlive": ["SuccessfulExit": false] as [String: Any],
             "ProcessType": "Interactive",
@@ -80,7 +107,13 @@ struct Install: ParsableCommand {
         print("✓ launch-at-login installed")
         print("  plist:  \(url.path)")
         print("  binary: \(binary)")
+        if let model {
+            print("  model:  \(model)")
+        }
         print("  logs:   /tmp/parrot.out.log, /tmp/parrot.err.log")
+        print()
+        print("Grant Accessibility access to \(binary) in")
+        print("System Settings → Privacy & Security → Accessibility.")
     }
 
     private func removeAgent() throws {
