@@ -40,6 +40,10 @@ parrot --hotkey right-option           # change the push-to-talk key
 parrot --no-overlay                    # disable the bottom-of-screen pill
 ```
 
+You can also change the push-to-talk key while Parrot is running: click its
+menu-bar icon, open **Push-to-talk key**, and choose a modifier. The selection
+is applied immediately and remembered for future launches.
+
 ## Stack
 
 - **Swift** — single SPM executable target

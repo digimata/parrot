@@ -10,17 +10,71 @@ final class HotkeyMonitor {
     enum Event { case pressed, released }
     enum HotkeyError: Error { case tapCreateFailed }
 
-    /// Mask of the modifier we treat as the hotkey. Fn = `.maskSecondaryFn`.
-    private let mask: CGEventFlags
+    enum Hotkey: String, CaseIterable {
+        case fn
+        case leftOption = "left-option"
+        case rightOption = "right-option"
+        case leftCommand = "left-command"
+        case rightCommand = "right-command"
+        case leftControl = "left-control"
+        case rightControl = "right-control"
+        case leftShift = "left-shift"
+        case rightShift = "right-shift"
+
+        var displayName: String {
+            switch self {
+            case .fn: return "Fn"
+            case .leftOption: return "Left Option (⌥)"
+            case .rightOption: return "Right Option (⌥)"
+            case .leftCommand: return "Left Command (⌘)"
+            case .rightCommand: return "Right Command (⌘)"
+            case .leftControl: return "Left Control (⌃)"
+            case .rightControl: return "Right Control (⌃)"
+            case .leftShift: return "Left Shift (⇧)"
+            case .rightShift: return "Right Shift (⇧)"
+            }
+        }
+
+        fileprivate var mask: CGEventFlags {
+            switch self {
+            case .fn: return .maskSecondaryFn
+            case .leftOption, .rightOption: return .maskAlternate
+            case .leftCommand, .rightCommand: return .maskCommand
+            case .leftControl, .rightControl: return .maskControl
+            case .leftShift, .rightShift: return .maskShift
+            }
+        }
+
+        fileprivate var keycode: Int64? {
+            switch self {
+            case .fn: return nil
+            case .leftOption: return 58
+            case .rightOption: return 61
+            case .leftCommand: return 55
+            case .rightCommand: return 54
+            case .leftControl: return 59
+            case .rightControl: return 62
+            case .leftShift: return 56
+            case .rightShift: return 60
+            }
+        }
+    }
+
+    private(set) var hotkey: Hotkey
     private let debug: Bool
     private var onEvent: ((Event) -> Void)?
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isPressed = false
 
-    init(mask: CGEventFlags = .maskSecondaryFn, debug: Bool = false) {
-        self.mask = mask
+    init(hotkey: Hotkey = .fn, debug: Bool = false) {
+        self.hotkey = hotkey
         self.debug = debug
+    }
+
+    func setHotkey(_ hotkey: Hotkey) {
+        self.hotkey = hotkey
+        isPressed = false
     }
 
     func start(onEvent: @escaping (Event) -> Void) throws {
@@ -87,7 +141,11 @@ final class HotkeyMonitor {
                 ))
         }
         guard type == .flagsChanged else { return }
-        let pressed = event.flags.contains(mask)
+        if let expectedKeycode = hotkey.keycode {
+            let keycode = event.getIntegerValueField(.keyboardEventKeycode)
+            guard keycode == expectedKeycode else { return }
+        }
+        let pressed = event.flags.contains(hotkey.mask)
         guard pressed != isPressed else { return }
         isPressed = pressed
         onEvent?(pressed ? .pressed : .released)

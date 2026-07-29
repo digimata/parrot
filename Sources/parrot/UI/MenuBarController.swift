@@ -9,21 +9,51 @@ final class MenuBarController {
     private let modelLabel: NSMenuItem
     private let stateLabel: NSMenuItem
     private let modelID: String
+    private var hotkey: HotkeyMonitor.Hotkey
+    private let onHotkeyChanged: (HotkeyMonitor.Hotkey) -> Void
 
-    init(modelID: String) {
+    init(
+        modelID: String,
+        hotkey: HotkeyMonitor.Hotkey,
+        onHotkeyChanged: @escaping (HotkeyMonitor.Hotkey) -> Void
+    ) {
         self.modelID = modelID
+        self.hotkey = hotkey
+        self.onHotkeyChanged = onHotkeyChanged
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        stateLabel = NSMenuItem(title: "idle · hold fn to dictate", action: nil, keyEquivalent: "")
+        stateLabel = NSMenuItem(
+            title: "idle · hold \(hotkey.displayName) to dictate",
+            action: nil,
+            keyEquivalent: ""
+        )
         stateLabel.isEnabled = false
         menu.addItem(stateLabel)
 
         modelLabel = NSMenuItem(title: "model: \(modelID)", action: nil, keyEquivalent: "")
         modelLabel.isEnabled = false
         menu.addItem(modelLabel)
+
+        menu.addItem(.separator())
+
+        let hotkeyMenu = NSMenu()
+        for candidate in HotkeyMonitor.Hotkey.allCases {
+            let item = NSMenuItem(
+                title: candidate.displayName,
+                action: #selector(hotkeyClicked(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = candidate.rawValue
+            item.state = candidate == hotkey ? .on : .off
+            hotkeyMenu.addItem(item)
+        }
+        let hotkeyItem = NSMenuItem(title: "Push-to-talk key", action: nil, keyEquivalent: "")
+        hotkeyItem.submenu = hotkeyMenu
+        menu.addItem(hotkeyItem)
 
         menu.addItem(.separator())
 
@@ -40,7 +70,9 @@ final class MenuBarController {
     }
 
     func setRecording(_ recording: Bool) {
-        stateLabel.title = recording ? "● recording" : "idle · hold fn to dictate"
+        stateLabel.title = recording
+            ? "● recording"
+            : "idle · hold \(hotkey.displayName) to dictate"
     }
 
     func setTranscribing() {
@@ -80,5 +112,21 @@ final class MenuBarController {
 
     @objc private func quitClicked() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func hotkeyClicked(_ sender: NSMenuItem) {
+        guard
+            let rawValue = sender.representedObject as? String,
+            let selected = HotkeyMonitor.Hotkey(rawValue: rawValue)
+        else { return }
+
+        hotkey = selected
+        HotkeyPreferences.selected = selected
+        onHotkeyChanged(selected)
+        stateLabel.title = "idle · hold \(selected.displayName) to dictate"
+
+        for item in sender.menu?.items ?? [] {
+            item.state = item === sender ? .on : .off
+        }
     }
 }
