@@ -25,8 +25,11 @@ struct Run: ParsableCommand {
     @Flag(name: .long, help: "Print every keyboard event the tap sees (debug).")
     var debugHotkey: Bool = false
 
-    @Flag(name: .long, help: "Write each capture to /tmp/parrot-last.wav for inspection.")
+    @Flag(name: .long, help: "Write each capture to ~/Library/Caches/parrot/last-capture.wav for inspection. The file holds raw recorded audio.")
     var dumpWav: Bool = false
+
+    @Flag(name: .long, help: "Print the full transcript text to stderr. The text of everything you dictate will appear in logs.")
+    var echoTranscripts: Bool = false
 
     @Flag(name: .long, help: "Disable the on-screen recording overlay.")
     var noOverlay: Bool = false
@@ -84,6 +87,7 @@ struct Run: ParsableCommand {
         let monitor = HotkeyMonitor(debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
+        let echoTranscripts = self.echoTranscripts
         let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
@@ -116,8 +120,8 @@ struct Run: ParsableCommand {
                         String(format: "○ captured %.2fs · rms %.3f\n", seconds, rms).utf8
                     ))
                     if dumpWav, !samples.isEmpty {
-                        let path = "/tmp/parrot-last.wav"
                         do {
+                            let path = try dumpWavPath()
                             try WAVWriter.write(samples: samples, sampleRate: 16_000, to: path)
                             FileHandle.standardError.write(Data("  wrote \(path)\n".utf8))
                         } catch {
@@ -136,9 +140,10 @@ struct Run: ParsableCommand {
                         do {
                             let text = try await transcriber.transcribe(samples)
                             let elapsed = Date().timeIntervalSince(started)
-                            FileHandle.standardError.write(Data(
-                                String(format: "→ %.2fs · %@\n", elapsed, text).utf8
-                            ))
+                            let line = echoTranscripts
+                                ? String(format: "→ %.2fs · %@\n", elapsed, text)
+                                : String(format: "→ %.2fs · %ld chars\n", elapsed, text.count)
+                            FileHandle.standardError.write(Data(line.utf8))
                             await MainActor.run {
                                 TextInjector.inject(text)
                                 overlay?.hide()
@@ -172,6 +177,26 @@ struct Run: ParsableCommand {
         FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
         app.run()
     }
+}
+
+/// Destination for `--dump-wav`. Recorded audio is as sensitive as the
+/// transcript, so it stays out of world-readable /tmp.
+private func dumpWavPath() throws -> String {
+    let fm = FileManager.default
+    let dir = fm.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Caches/parrot", isDirectory: true)
+    try fm.createDirectory(
+        at: dir,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    // createDirectory doesn't retighten a directory that already exists.
+    try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+
+    let path = dir.appendingPathComponent("last-capture.wav").path
+    // Pre-create 0600; a plain write would land under the process umask (0644).
+    _ = fm.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
+    return path
 }
 
 struct Doctor: ParsableCommand {
