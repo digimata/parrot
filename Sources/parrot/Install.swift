@@ -17,17 +17,34 @@ struct Install: ParsableCommand {
     @Flag(name: .long, help: "Remove the launch-at-login agent.")
     var uninstall: Bool = false
 
+    @Flag(name: .long, help: "Keep daemon output in ~/Library/Logs/parrot.log (mode 0600). Off by default; output is discarded.")
+    var logFile: Bool = false
+
+    @Flag(name: .long, help: "Delete the world-readable /tmp/parrot.{out,err}.log files left by earlier versions.")
+    var purgeLegacyLogs: Bool = false
+
     func run() throws {
-        if launchAtLogin == uninstall {
+        if launchAtLogin && uninstall {
+            FileHandle.standardError.write(Data(
+                "specify exactly one of --launch-at-login or --uninstall\n".utf8
+            ))
+            throw ExitCode(64)
+        }
+        if !launchAtLogin && !uninstall && !purgeLegacyLogs {
             FileHandle.standardError.write(Data(
                 "specify exactly one of --launch-at-login or --uninstall\n".utf8
             ))
             throw ExitCode(64)
         }
 
+        reportLegacyLogs()
+        if purgeLegacyLogs {
+            purgeLegacyLogFiles()
+        }
+
         if uninstall {
             try removeAgent()
-        } else {
+        } else if launchAtLogin {
             try writeAgent()
         }
     }
@@ -46,15 +63,30 @@ struct Install: ParsableCommand {
     private func writeAgent() throws {
         let binary = try resolveBinaryPath()
 
-        let plist: [String: Any] = [
+        let logPath: String
+        if logFile {
+            logPath = try prepareLogFile()
+        } else {
+            logPath = "/dev/null"
+        }
+
+        // ProgramArguments deliberately omits --echo-transcripts: a background
+        // daemon must never be configured to write transcript text to a log.
+        var plist: [String: Any] = [
             "Label": Self.label,
             "ProgramArguments": [binary, "run", "--skip-doctor"],
             "RunAtLoad": true,
             "KeepAlive": ["SuccessfulExit": false] as [String: Any],
             "ProcessType": "Interactive",
-            "StandardOutPath": "/tmp/parrot.out.log",
-            "StandardErrorPath": "/tmp/parrot.err.log",
+            "StandardOutPath": logPath,
+            "StandardErrorPath": logPath,
         ]
+        if logFile {
+            // launchd recreates a missing std-path file under its own umask
+            // (0644), so the 0600 degrades the first time the log is deleted.
+            // plists can't encode octal: 127 is 0o177.
+            plist["Umask"] = 127
+        }
 
         let url = plistURL
         try FileManager.default.createDirectory(
@@ -80,7 +112,78 @@ struct Install: ParsableCommand {
         print("✓ launch-at-login installed")
         print("  plist:  \(url.path)")
         print("  binary: \(binary)")
-        print("  logs:   /tmp/parrot.out.log, /tmp/parrot.err.log")
+        if logFile {
+            print("  logs:   \(logPath) (mode 0600)")
+        } else {
+            print("  logs:   discarded — pass --log-file to keep them")
+        }
+    }
+
+    /// launchd appends to an existing std-path file and leaves its mode alone,
+    /// but creates a missing one at 0644 — so create it 0600 before bootstrap.
+    private func prepareLogFile() throws -> String {
+        let fm = FileManager.default
+        let url = fm.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs", isDirectory: true)
+            .appendingPathComponent("parrot.log")
+        try fm.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if fm.fileExists(atPath: url.path) {
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } else {
+            _ = fm.createFile(
+                atPath: url.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            )
+        }
+        return url.path
+    }
+
+    private static let legacyLogPaths = ["/tmp/parrot.out.log", "/tmp/parrot.err.log"]
+
+    /// Versions up to v0.0.5 pointed the daemon's stderr at /tmp and logged
+    /// every transcript, so anyone who ran `--launch-at-login` has a plaintext
+    /// record of everything they dictated, readable by any local user.
+    private func reportLegacyLogs() {
+        let fm = FileManager.default
+        let found = Self.legacyLogPaths.filter { fm.fileExists(atPath: $0) }
+        guard !found.isEmpty else { return }
+
+        var msg = "\n⚠️  found logs from an earlier parrot version:\n"
+        for path in found {
+            let attrs = try? fm.attributesOfItem(atPath: path)
+            let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+            msg += "     \(path) — \(size) bytes\n"
+        }
+        msg += "   these are world-readable and contain the text of every transcript\n"
+        msg += "   parrot produced while the daemon was running.\n"
+        if !purgeLegacyLogs {
+            msg += "   review them, then delete with: parrot install --purge-legacy-logs\n"
+        }
+        msg += "\n"
+        FileHandle.standardError.write(Data(msg.utf8))
+    }
+
+    private func purgeLegacyLogFiles() {
+        let fm = FileManager.default
+        let found = Self.legacyLogPaths.filter { fm.fileExists(atPath: $0) }
+        if found.isEmpty {
+            print("no legacy /tmp logs to remove")
+            return
+        }
+        for path in found {
+            do {
+                try fm.removeItem(atPath: path)
+                print("✓ removed \(path)")
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "couldn't remove \(path): \(error)\n".utf8
+                ))
+            }
+        }
     }
 
     private func removeAgent() throws {

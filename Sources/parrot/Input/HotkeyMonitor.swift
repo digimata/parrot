@@ -35,10 +35,9 @@ final class HotkeyMonitor {
             throw HotkeyError.tapCreateFailed
         }
 
-        let mask: CGEventMask =
-            (1 << CGEventType.flagsChanged.rawValue)
-            | (1 << CGEventType.keyDown.rawValue)
-            | (1 << CGEventType.keyUp.rawValue)
+        // Deliberately narrowed: adding keyDown/keyUp would hand this process
+        // the content of every keystroke typed system-wide. Don't widen it.
+        let mask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
         let userInfo = Unmanaged.passUnretained(self).toOpaque()
 
         // .cgSessionEventTap is the right level for an accessibility-granted
@@ -76,21 +75,27 @@ final class HotkeyMonitor {
         onEvent = nil
     }
 
-    fileprivate func handle(type: CGEventType, event: CGEvent) {
+    fileprivate func handle(event: CGEvent) {
         if debug {
-            let flags = event.flags
-            let keycode = event.getIntegerValueField(.keyboardEventKeycode)
+            // No keycode: it's meaningless for flagsChanged anyway.
             FileHandle.standardError.write(
-                Data(
-                    "  [debug] type=\(type.rawValue) keycode=\(keycode) flags=\(String(flags.rawValue, radix: 16))\n"
-                        .utf8
-                ))
+                Data("  [debug] flags=\(String(event.flags.rawValue, radix: 16))\n".utf8)
+            )
         }
-        guard type == .flagsChanged else { return }
         let pressed = event.flags.contains(mask)
         guard pressed != isPressed else { return }
         isPressed = pressed
         onEvent?(pressed ? .pressed : .released)
+    }
+
+    /// macOS disables taps that block too long, and whenever Secure Input is
+    /// engaged. Without this the hotkey silently stops working for the session.
+    fileprivate func reEnableTap() {
+        guard let tap else { return }
+        CGEvent.tapEnable(tap: tap, enable: true)
+        FileHandle.standardError.write(Data(
+            "hotkey tap was disabled by the system; re-enabled\n".utf8
+        ))
     }
 }
 
@@ -103,16 +108,16 @@ private func hotkeyCallback(
     guard let userInfo else { return Unmanaged.passUnretained(event) }
     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
 
+    // These two are delivered out of band, regardless of eventsOfInterest.
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        // System disabled our tap; we'll need to re-enable. For now just no-op
-        // and let the user restart parrot.
+        monitor.reEnableTap()
         return Unmanaged.passUnretained(event)
     }
 
     let copy = event.copy()
     DispatchQueue.main.async {
         if let copy {
-            monitor.handle(type: type, event: copy)
+            monitor.handle(event: copy)
         }
     }
     return Unmanaged.passUnretained(event)

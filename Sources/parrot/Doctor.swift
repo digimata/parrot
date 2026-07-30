@@ -21,7 +21,23 @@ enum DoctorReport {
             checkMicrophone(),
             checkAccessibility(),
             checkFnKeyMapping(),
+            checkLegacyLogs(),
         ]
+    }
+
+    /// Versions up to v0.0.5 sent the daemon's stderr, which included every
+    /// transcript, to world-readable paths in /tmp.
+    static func checkLegacyLogs() -> Check {
+        let paths = ["/tmp/parrot.out.log", "/tmp/parrot.err.log"]
+        let found = paths.filter { FileManager.default.fileExists(atPath: $0) }
+        guard !found.isEmpty else {
+            return Check(name: "legacy logs", status: .ok, remediation: nil)
+        }
+        return Check(
+            name: "legacy logs",
+            status: .warn("world-readable transcript logs present: \(found.joined(separator: ", "))"),
+            remediation: "review them, then run `parrot install --purge-legacy-logs`"
+        )
     }
 
     static func checkMicrophone() -> Check {
