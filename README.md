@@ -12,7 +12,42 @@ parrot install --launch-at-login   # optional — runs in the background on logi
 
 **Requires:** macOS 14+ on Apple Silicon (M1 or newer). Transcription runs on the Apple Neural Engine via CoreML — so the installer refuses to run on Intel.
 
-The installer drops the binary in `/usr/local/bin/parrot`. Builds are unsigned for now, so the installer strips the quarantine xattr — once you've inspected the script you'll see exactly what it does.
+The installer drops the binary in `/usr/local/bin/parrot`. It downloads the published
+`.sha256` and verifies the tarball before extracting it, prints the digest, and refuses to
+install if the checksum is missing or doesn't match. It also checks the archive contains
+exactly one member (`parrot`) and no absolute or `..` paths.
+
+Pin a version — piping to `sh` leaves no way to pass arguments, so use the environment:
+
+```sh
+PARROT_VERSION=v0.0.5 curl -fsSL https://digimata.github.io/parrot/install.sh | sh
+```
+
+**Builds are unsigned and un-notarized.** The installer removes the quarantine attribute
+if one is present, but `curl` does not set it — quarantine is applied by apps that opt into
+`LSFileQuarantineEnabled`, like browsers — so in the piped path there is nothing to remove
+and the script says so. It matters only if you downloaded the tarball in a browser.
+
+### Verifying a release by hand
+
+```sh
+TAG=v0.0.5
+curl -fsSLO https://github.com/digimata/parrot/releases/download/$TAG/parrot-macos-arm64.tar.gz
+curl -fsSLO https://github.com/digimata/parrot/releases/download/$TAG/parrot-macos-arm64.tar.gz.sha256
+shasum -a 256 -c parrot-macos-arm64.tar.gz.sha256
+
+# releases built after provenance was enabled can also be checked against GitHub's
+# signed attestation (requires the gh CLI, logged in):
+gh attestation verify parrot-macos-arm64.tar.gz --repo digimata/parrot
+```
+
+A checksum published in the same release as the artifact only proves the download wasn't
+corrupted in transit — whoever can replace the tarball can replace the `.sha256` beside it.
+The attestation is the stronger check: GitHub signs a statement binding the artifact to a
+specific workflow run at a specific commit, which the repo owner cannot forge. Releases
+published before provenance was enabled have no attestation, so the installer reports a
+failed provenance check as a warning rather than aborting. Set
+`PARROT_REQUIRE_ATTESTATION=1` to make it abort instead.
 
 ## How to use
 

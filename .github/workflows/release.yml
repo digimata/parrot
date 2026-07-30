@@ -6,8 +6,12 @@ on:
       - "v*"
   workflow_dispatch:
 
+# A permissions block replaces the defaults rather than merging with them, so
+# contents: write must stay listed or the release upload fails with a 403.
 permissions:
   contents: write
+  id-token: write      # OIDC token used to sign the attestation
+  attestations: write
 
 jobs:
   build:
@@ -49,6 +53,14 @@ jobs:
           tar -czf parrot-macos-arm64.tar.gz parrot
           shasum -a 256 parrot-macos-arm64.tar.gz > parrot-macos-arm64.tar.gz.sha256
           ls -lh
+
+      # Attests the file's digest, so it must run on the final bytes: after
+      # packaging, before upload.
+      - name: attest build provenance
+        uses: actions/attest-build-provenance@v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          subject-path: dist/parrot-macos-arm64.tar.gz
 
       - name: release
         uses: softprops/action-gh-release@v2
