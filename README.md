@@ -37,8 +37,35 @@ parrot models list                     # list available models
 parrot models download <id>            # pre-download a model
 parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
 parrot --hotkey right-option           # change the push-to-talk key
+parrot --inject-mode type-unicode      # type the text instead of pasting it
 parrot --no-overlay                    # disable the bottom-of-screen pill
 ```
+
+### Non-Apple keyboards
+
+`fn` only exists as far as macOS is concerned on Apple keyboards. Third-party
+keyboards handle their `Fn` key entirely in firmware — it reshapes the F-row
+locally and never sends anything to the host, so no application can bind to it.
+On those, pick another modifier:
+
+```sh
+parrot --hotkey left-option
+```
+
+`--hotkey` accepts `fn`, and the left/right variants of `option`, `command`,
+`control`, and `shift`. Run `parrot run --debug-hotkey` to print the keycodes
+your keyboard actually emits. Note that it logs every key you press while it
+runs, so use it to identify a key and then stop it.
+
+### Injection modes
+
+`--inject-mode paste` (the default) puts the transcript on the pasteboard,
+sends ⌘V, and restores your previous pasteboard contents. Terminals and
+Electron apps discard synthesized unicode key events but all handle paste, so
+this is the mode that works everywhere.
+
+`--inject-mode type-unicode` synthesizes the characters directly and never
+touches the pasteboard, at the cost of silently dropping text in those apps.
 
 ## Stack
 

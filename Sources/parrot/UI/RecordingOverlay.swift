@@ -13,17 +13,24 @@ final class RecordingOverlay {
 
     private var window: NSPanel?
     private let model = OverlayModel()
+    /// Invalidates a pending `hide()` when a new recording starts inside the
+    /// dismiss animation window, which would otherwise order the freshly shown
+    /// panel back out.
+    private var hideGeneration = 0
 
     func show(_ state: State) {
         ensureWindow()
+        guard let window else { return }
+        hideGeneration &+= 1
         if state == .recording {
             model.resetLevels()
         }
-        guard let window else { return }
-        let needsAppear = !window.isVisible
-        if needsAppear {
-            positionAtBottomCenter(window)
-            window.orderFrontRegardless()
+        let wasHidden = !window.isVisible
+        // Reposition and re-order on every show: the active screen and Space
+        // can both change between recordings.
+        position(window)
+        window.orderFrontRegardless()
+        if wasHidden {
             // Defer the state change so SwiftUI lays out in the .hidden style
             // first, then animates to the visible style on the next runloop tick.
             DispatchQueue.main.async { [model] in
@@ -36,11 +43,13 @@ final class RecordingOverlay {
 
     func hide() {
         model.state = .hidden
+        hideGeneration &+= 1
+        let generation = hideGeneration
         // Let the SwiftUI scale+fade animation play out before yanking the
         // window — otherwise it just pops away.
-        let window = self.window
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            window?.orderOut(nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+            guard let self, self.hideGeneration == generation else { return }
+            self.window?.orderOut(nil)
         }
     }
 
@@ -60,7 +69,9 @@ final class RecordingOverlay {
             defer: false
         )
         panel.isFloatingPanel = true
-        panel.level = .statusBar
+        // Above full-screen windows, which sit above .statusBar. Without this
+        // the pill is invisible whenever the frontmost app is full-screen.
+        panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -76,8 +87,15 @@ final class RecordingOverlay {
         window = panel
     }
 
-    private func positionAtBottomCenter(_ window: NSPanel) {
-        guard let screen = NSScreen.main else { return }
+    private func position(_ window: NSPanel) {
+        // `NSScreen.main` follows keyboard focus and is nil when no window has
+        // it — unreliable for a background agent. The screen under the pointer
+        // is the one the user is looking at.
+        let pointer = NSEvent.mouseLocation
+        guard
+            let screen = NSScreen.screens.first(where: { $0.frame.contains(pointer) })
+                ?? NSScreen.main ?? NSScreen.screens.first
+        else { return }
         let frame = window.frame
         let visible = screen.visibleFrame
         let x = visible.midX - frame.width / 2
