@@ -9,6 +9,7 @@ actor WhisperKitTranscriber: Transcriber {
     init(model: TranscriptionModel) {
         self.modelID = model.id
         self.model = model
+        _ = LocalDictionary.loadOrCreateDefault()
     }
 
     /// Loads the model into memory; downloads first if not already on disk.
@@ -31,7 +32,9 @@ actor WhisperKitTranscriber: Transcriber {
 
         let results = try await pipeline.transcribe(audioArray: audio)
         let raw = results.map(\.text).joined(separator: " ")
-        return Self.sanitize(raw)
+        // This file is tiny; reloading it lets a saved edit take effect for the
+        // very next dictation without restarting the daemon.
+        return LocalDictionary.loadOrCreateDefault().apply(to: Self.sanitize(raw))
     }
 
     /// Strip Whisper's non-speech bracket tokens ([BLANK_AUDIO], [MUSIC],

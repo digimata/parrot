@@ -40,6 +40,25 @@ parrot --hotkey right-option           # change the push-to-talk key
 parrot --no-overlay                    # disable the bottom-of-screen pill
 ```
 
+## Local dictionary
+
+On its first run, Parrot creates `~/.config/parrot/dictionary.json`. It never
+leaves the Mac and normalizes spelling variants after Whisper has transcribed a
+dictation. Add your own terms by editing the file:
+
+```json
+{
+  "entries": [
+    { "canonical": "AcmeAPI", "variants": ["acme api", "acme A.P.I."] }
+  ]
+}
+```
+
+The dictionary is applied at the end of transcription. Saved edits are picked
+up on the next dictation; no Parrot restart is needed. The easiest way to add
+a correction is from the menu-bar icon: **Add dictionary correction…**. Enter
+what Parrot wrote, then the spelling you want it to use.
+
 ## Stack
 
 - **Swift** — single SPM executable target

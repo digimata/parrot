@@ -27,6 +27,16 @@ final class MenuBarController {
 
         menu.addItem(.separator())
 
+        let dictionary = NSMenuItem(
+            title: "Add dictionary correction…",
+            action: #selector(addDictionaryCorrectionClicked),
+            keyEquivalent: ""
+        )
+        dictionary.target = self
+        menu.addItem(dictionary)
+
+        menu.addItem(.separator())
+
         let quit = NSMenuItem(
             title: "Quit parrot",
             action: #selector(quitClicked),
@@ -80,5 +90,75 @@ final class MenuBarController {
 
     @objc private func quitClicked() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func addDictionaryCorrectionClicked() {
+        let transcribedAs = NSTextField(string: "")
+        transcribedAs.placeholderString = "e.g. acme api"
+        transcribedAs.controlSize = .regular
+
+        let correctSpelling = NSTextField(string: "")
+        correctSpelling.placeholderString = "e.g. AcmeAPI"
+        correctSpelling.controlSize = .regular
+
+        let alert = NSAlert()
+        alert.messageText = "Add dictionary correction"
+        alert.informativeText = "Enter what Parrot wrote, then your preferred spelling."
+        alert.addButton(withTitle: "Add correction")
+        alert.addButton(withTitle: "Cancel")
+        alert.accessoryView = dictionaryForm(
+            transcribedAs: transcribedAs,
+            correctSpelling: correctSpelling
+        )
+        alert.window.initialFirstResponder = transcribedAs
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try LocalDictionary.addCorrection(
+                transcribedAs: transcribedAs.stringValue,
+                correctSpelling: correctSpelling.stringValue
+            )
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
+    private func dictionaryForm(
+        transcribedAs: NSTextField,
+        correctSpelling: NSTextField
+    ) -> NSView {
+        let stack = NSStackView(views: [
+            fieldGroup(title: "Parrot wrote", field: transcribedAs),
+            fieldGroup(title: "Use this spelling", field: correctSpelling),
+        ])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 12
+
+        // NSAlert sizes an accessory view from its frame rather than resolving
+        // external constraints. Give it a concrete, pre-laid-out size so the
+        // form stays inside the alert on every supported macOS version.
+        stack.layoutSubtreeIfNeeded()
+        let form = NSView(frame: NSRect(origin: .zero, size: stack.fittingSize))
+        stack.frame = form.bounds
+        stack.autoresizingMask = [.width, .height]
+        form.addSubview(stack)
+        return form
+    }
+
+    private func fieldGroup(title: String, field: NSTextField) -> NSStackView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .medium)
+
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.widthAnchor.constraint(equalToConstant: 360).isActive = true
+
+        let group = NSStackView(views: [label, field])
+        group.orientation = .vertical
+        group.alignment = .leading
+        group.spacing = 4
+        return group
     }
 }
