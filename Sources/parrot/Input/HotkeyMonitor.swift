@@ -12,14 +12,18 @@ final class HotkeyMonitor {
 
     /// Mask of the modifier we treat as the hotkey. Fn = `.maskSecondaryFn`.
     private let mask: CGEventFlags
+    /// When set, only flagsChanged events with this keycode are considered,
+    /// so left/right variants of a modifier can be told apart.
+    private let keycode: Int64?
     private let debug: Bool
     private var onEvent: ((Event) -> Void)?
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isPressed = false
 
-    init(mask: CGEventFlags = .maskSecondaryFn, debug: Bool = false) {
+    init(mask: CGEventFlags = .maskSecondaryFn, keycode: Int64? = nil, debug: Bool = false) {
         self.mask = mask
+        self.keycode = keycode
         self.debug = debug
     }
 
@@ -87,6 +91,7 @@ final class HotkeyMonitor {
                 ))
         }
         guard type == .flagsChanged else { return }
+        if let keycode, event.getIntegerValueField(.keyboardEventKeycode) != keycode { return }
         let pressed = event.flags.contains(mask)
         guard pressed != isPressed else { return }
         isPressed = pressed
