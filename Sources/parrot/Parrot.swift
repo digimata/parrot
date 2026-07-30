@@ -31,6 +31,9 @@ struct Run: ParsableCommand {
     @Flag(name: .long, help: "Disable the on-screen recording overlay.")
     var noOverlay: Bool = false
 
+    @Flag(name: .long, help: "Mute the active macOS output while recording.")
+    var muteOutput: Bool = false
+
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
 
@@ -83,6 +86,7 @@ struct Run: ParsableCommand {
 
         let monitor = HotkeyMonitor(debug: debugHotkey)
         let capture = AudioCapture()
+        let outputMute = muteOutput ? OutputMuteController() : nil
         let dumpWav = self.dumpWav
         let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
         if let overlay {
@@ -90,68 +94,94 @@ struct Run: ParsableCommand {
         }
         let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
 
+        func beginRecording() -> Bool {
+            outputMute?.mute()
+            do {
+                try capture.start()
+                FileHandle.standardError.write(Data("● recording\n".utf8))
+                MainActor.assumeIsolated {
+                    overlay?.show(.recording)
+                    menuBar.setRecording(true)
+                }
+                return true
+            } catch {
+                outputMute?.restore()
+                FileHandle.standardError.write(Data("capture failed: \(error)\n".utf8))
+                return false
+            }
+        }
+
+        func finishRecording() {
+            let samples = capture.stop()
+            outputMute?.restore()
+            MainActor.assumeIsolated {
+                overlay?.show(.transcribing)
+                menuBar.setTranscribing()
+            }
+            let seconds = Double(samples.count) / AudioCapture.targetSampleRate
+            let rms = computeRMS(samples)
+            FileHandle.standardError.write(Data(
+                String(format: "○ captured %.2fs · rms %.3f\n", seconds, rms).utf8
+            ))
+            if dumpWav, !samples.isEmpty {
+                let path = "/tmp/parrot-last.wav"
+                do {
+                    try WAVWriter.write(samples: samples, sampleRate: 16_000, to: path)
+                    FileHandle.standardError.write(Data("  wrote \(path)\n".utf8))
+                } catch {
+                    FileHandle.standardError.write(Data("  wav write failed: \(error)\n".utf8))
+                }
+            }
+            guard !samples.isEmpty else {
+                MainActor.assumeIsolated {
+                    overlay?.hide()
+                    menuBar.setRecording(false)
+                }
+                return
+            }
+            Task {
+                let started = Date()
+                do {
+                    let text = try await transcriber.transcribe(samples)
+                    let elapsed = Date().timeIntervalSince(started)
+                    FileHandle.standardError.write(Data(
+                        String(format: "→ %.2fs · %@\n", elapsed, text).utf8
+                    ))
+                    await MainActor.run {
+                        TextInjector.inject(text)
+                        overlay?.hide()
+                        menuBar.setRecording(false)
+                    }
+                } catch {
+                    FileHandle.standardError.write(Data("transcription failed: \(error)\n".utf8))
+                    await MainActor.run {
+                        overlay?.hide()
+                        menuBar.setRecording(false)
+                    }
+                }
+            }
+        }
+
+        // Respect the user's macOS double-click preference, while keeping the
+        // recognition window short enough to feel immediate for Fn dictation.
+        let doubleTapInterval = min(max(NSEvent.doubleClickInterval, 0.30), 0.50)
+        let gestureController = MainActor.assumeIsolated {
+            FnDictationGestureController(
+                doubleTapInterval: doubleTapInterval,
+                startRecording: beginRecording,
+                stopRecording: finishRecording,
+                showLocked: {
+                    FileHandle.standardError.write(Data("🔒 recording locked · tap fn to stop\n".utf8))
+                    overlay?.show(.locked)
+                    menuBar.setLockedRecording()
+                }
+            )
+        }
+
         do {
             try monitor.start { event in
-                switch event {
-                case .pressed:
-                    do {
-                        try capture.start()
-                        FileHandle.standardError.write(Data("● recording\n".utf8))
-                        MainActor.assumeIsolated {
-                            overlay?.show(.recording)
-                            menuBar.setRecording(true)
-                        }
-                    } catch {
-                        FileHandle.standardError.write(Data("capture failed: \(error)\n".utf8))
-                    }
-                case .released:
-                    let samples = capture.stop()
-                    MainActor.assumeIsolated {
-                        overlay?.show(.transcribing)
-                        menuBar.setTranscribing()
-                    }
-                    let seconds = Double(samples.count) / AudioCapture.targetSampleRate
-                    let rms = computeRMS(samples)
-                    FileHandle.standardError.write(Data(
-                        String(format: "○ captured %.2fs · rms %.3f\n", seconds, rms).utf8
-                    ))
-                    if dumpWav, !samples.isEmpty {
-                        let path = "/tmp/parrot-last.wav"
-                        do {
-                            try WAVWriter.write(samples: samples, sampleRate: 16_000, to: path)
-                            FileHandle.standardError.write(Data("  wrote \(path)\n".utf8))
-                        } catch {
-                            FileHandle.standardError.write(Data("  wav write failed: \(error)\n".utf8))
-                        }
-                    }
-                    guard !samples.isEmpty else {
-                        MainActor.assumeIsolated {
-                            overlay?.hide()
-                            menuBar.setRecording(false)
-                        }
-                        return
-                    }
-                    Task {
-                        let started = Date()
-                        do {
-                            let text = try await transcriber.transcribe(samples)
-                            let elapsed = Date().timeIntervalSince(started)
-                            FileHandle.standardError.write(Data(
-                                String(format: "→ %.2fs · %@\n", elapsed, text).utf8
-                            ))
-                            await MainActor.run {
-                                TextInjector.inject(text)
-                                overlay?.hide()
-                                menuBar.setRecording(false)
-                            }
-                        } catch {
-                            FileHandle.standardError.write(Data("transcription failed: \(error)\n".utf8))
-                            await MainActor.run {
-                                overlay?.hide()
-                                menuBar.setRecording(false)
-                            }
-                        }
-                    }
+                MainActor.assumeIsolated {
+                    gestureController.handle(event)
                 }
             }
         } catch {
@@ -160,17 +190,41 @@ struct Run: ParsableCommand {
             throw ExitCode(1)
         }
 
-        let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-        sigint.setEventHandler {
+        let cleanUp = {
+            MainActor.assumeIsolated {
+                gestureController.cancel()
+            }
+            _ = capture.stop()
+            outputMute?.restore()
+        }
+        let terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: app,
+            queue: .main
+        ) { _ in
+            cleanUp()
+        }
+
+        let shutDown = {
             FileHandle.standardError.write(Data("\nshutting down\n".utf8))
             monitor.stop()
+            cleanUp()
             NSApp.terminate(nil)
         }
+
+        let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        sigint.setEventHandler(handler: shutDown)
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
+        let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        sigterm.setEventHandler(handler: shutDown)
+        sigterm.resume()
+        signal(SIGTERM, SIG_IGN)
+
         FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
         app.run()
+        NotificationCenter.default.removeObserver(terminationObserver)
     }
 }
 

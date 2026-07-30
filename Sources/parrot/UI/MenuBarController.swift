@@ -17,7 +17,7 @@ final class MenuBarController {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        stateLabel = NSMenuItem(title: "idle · hold fn to dictate", action: nil, keyEquivalent: "")
+        stateLabel = NSMenuItem(title: "idle · hold fn or double-tap to lock", action: nil, keyEquivalent: "")
         stateLabel.isEnabled = false
         menu.addItem(stateLabel)
 
@@ -40,11 +40,15 @@ final class MenuBarController {
     }
 
     func setRecording(_ recording: Bool) {
-        stateLabel.title = recording ? "● recording" : "idle · hold fn to dictate"
+        stateLabel.title = recording ? "● recording" : "idle · hold fn or double-tap to lock"
     }
 
     func setTranscribing() {
         stateLabel.title = "transcribing…"
+    }
+
+    func setLockedRecording() {
+        stateLabel.title = "🔒 recording · tap fn to stop"
     }
 
     private func configureButton(recording: Bool) {

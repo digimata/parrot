@@ -7,7 +7,7 @@ import Foundation
 /// Requires Accessibility permission. If the tap fails to register, callers
 /// will see an error from `start()`.
 final class HotkeyMonitor {
-    enum Event { case pressed, released }
+    enum Event { case pressed, released, interrupted }
     enum HotkeyError: Error { case tapCreateFailed }
 
     /// Mask of the modifier we treat as the hotkey. Fn = `.maskSecondaryFn`.
@@ -92,6 +92,14 @@ final class HotkeyMonitor {
         isPressed = pressed
         onEvent?(pressed ? .pressed : .released)
     }
+
+    fileprivate func handleTapInterruption() {
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+        isPressed = false
+        onEvent?(.interrupted)
+    }
 }
 
 private func hotkeyCallback(
@@ -104,8 +112,9 @@ private func hotkeyCallback(
     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
 
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        // System disabled our tap; we'll need to re-enable. For now just no-op
-        // and let the user restart parrot.
+        DispatchQueue.main.async {
+            monitor.handleTapInterruption()
+        }
         return Unmanaged.passUnretained(event)
     }
 
