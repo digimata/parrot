@@ -8,6 +8,7 @@ A minimal macOS dictation daemon. Push-to-talk, on-device transcription, text in
 curl -fsSL https://digimata.github.io/parrot/install.sh | sh
 parrot setup                       # grants mic + accessibility, downloads the model
 parrot install --launch-at-login   # optional — runs in the background on login
+parrot install --select-model      # optional — choose the launch-at-login model
 ```
 
 **Requires:** macOS 14+ on Apple Silicon (M1 or newer). Transcription runs on the Apple Neural Engine via CoreML — so the installer refuses to run on Intel.
@@ -31,6 +32,7 @@ That's it. There is no record button, no stop button, no "send" — `fn` is the 
 parrot                                 # run in the foreground (^C to quit)
 parrot setup                           # one-time setup: permissions + model download
 parrot install --launch-at-login       # register a LaunchAgent (background daemon)
+parrot install --select-model [model]  # update the LaunchAgent model (prompts if omitted)
 parrot install --uninstall             # remove the LaunchAgent
 parrot doctor                          # check permissions + fn key setting
 parrot models list                     # list available models

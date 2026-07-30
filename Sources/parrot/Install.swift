@@ -17,18 +17,38 @@ struct Install: ParsableCommand {
     @Flag(name: .long, help: "Remove the launch-at-login agent.")
     var uninstall: Bool = false
 
+    @Flag(
+        name: .long,
+        help: "Update the launch-at-login agent's model. Pass a model id or choose interactively."
+    )
+    var selectModel: Bool = false
+
+    @Argument(help: "Model id to use with --select-model.")
+    var selectedModelID: String?
+
     func run() throws {
-        if launchAtLogin == uninstall {
+        if selectedModelID != nil && !selectModel {
             FileHandle.standardError.write(Data(
-                "specify exactly one of --launch-at-login or --uninstall\n".utf8
+                "model id can only be specified with --select-model\n".utf8
+            ))
+            throw ExitCode(64)
+        }
+
+        let actionCount = [launchAtLogin, uninstall, selectModel].filter { $0 }.count
+        if actionCount != 1 {
+            FileHandle.standardError.write(Data(
+                "specify exactly one of --launch-at-login, --uninstall, or --select-model\n".utf8
             ))
             throw ExitCode(64)
         }
 
         if uninstall {
             try removeAgent()
+        } else if selectModel {
+            let model = try resolveSelectedModel()
+            try writeAgent(selectedModelID: model.id, actionName: "updated")
         } else {
-            try writeAgent()
+            try writeAgent(selectedModelID: nil, actionName: "installed")
         }
     }
 
@@ -43,12 +63,16 @@ struct Install: ParsableCommand {
             .appendingPathComponent("\(Self.label).plist")
     }
 
-    private func writeAgent() throws {
+    private func writeAgent(selectedModelID: String?, actionName: String) throws {
         let binary = try resolveBinaryPath()
+        var programArguments = [binary, "run", "--skip-doctor"]
+        if let selectedModelID {
+            programArguments.append(contentsOf: ["--model", selectedModelID])
+        }
 
         let plist: [String: Any] = [
             "Label": Self.label,
-            "ProgramArguments": [binary, "run", "--skip-doctor"],
+            "ProgramArguments": programArguments,
             "RunAtLoad": true,
             "KeepAlive": ["SuccessfulExit": false] as [String: Any],
             "ProcessType": "Interactive",
@@ -68,7 +92,8 @@ struct Install: ParsableCommand {
         )
         try data.write(to: url, options: .atomic)
 
-        // Best-effort bootstrap; ignore failure if already loaded.
+        // Best-effort restart of the managed LaunchAgent. This only targets
+        // parrot's launchd label, not manually started foreground processes.
         _ = runLaunchctl(["bootout", "gui/\(uid())", url.path])
         let result = runLaunchctl(["bootstrap", "gui/\(uid())", url.path])
         if result.status != 0 {
@@ -76,11 +101,62 @@ struct Install: ParsableCommand {
                 "warning: launchctl bootstrap exited \(result.status):\n\(result.stderr)\n".utf8
             ))
         }
+        let kickstart = runLaunchctl(["kickstart", "-k", "gui/\(uid())/\(Self.label)"])
+        if kickstart.status != 0 {
+            FileHandle.standardError.write(Data(
+                "warning: launchctl kickstart exited \(kickstart.status):\n\(kickstart.stderr)\n".utf8
+            ))
+        }
 
-        print("✓ launch-at-login installed")
+        print("✓ launch-at-login \(actionName)")
         print("  plist:  \(url.path)")
         print("  binary: \(binary)")
+        if let selectedModelID {
+            print("  model:  \(selectedModelID)")
+        }
         print("  logs:   /tmp/parrot.out.log, /tmp/parrot.err.log")
+    }
+
+    private func resolveSelectedModel() throws -> TranscriptionModel {
+        let id: String
+        if let selectedModelID {
+            id = selectedModelID
+        } else {
+            id = try promptForModelID()
+        }
+
+        guard let model = ModelRegistry.find(id) else {
+            FileHandle.standardError.write(Data("unknown model: \(id)\n".utf8))
+            FileHandle.standardError.write(Data("run `parrot models list` to see options.\n".utf8))
+            throw ExitCode(1)
+        }
+        return model
+    }
+
+    private func promptForModelID() throws -> String {
+        print("Select a model for the launch-at-login agent:")
+        for (index, model) in ModelRegistry.shared.enumerated() {
+            let marker = model.recommended ? " (recommended)" : ""
+            print("  \(index + 1). \(model.id) - \(model.displayName)\(marker)")
+        }
+        print("Enter a number: ", terminator: "")
+        fflush(stdout)
+
+        guard let line = readLine(), !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            FileHandle.standardError.write(Data("no model selected\n".utf8))
+            throw ExitCode(64)
+        }
+
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            let choice = Int(trimmed),
+            ModelRegistry.shared.indices.contains(choice - 1)
+        else {
+            FileHandle.standardError.write(Data("invalid model selection: \(trimmed)\n".utf8))
+            throw ExitCode(64)
+        }
+
+        return ModelRegistry.shared[choice - 1].id
     }
 
     private func removeAgent() throws {
