@@ -11,6 +11,23 @@ actor WhisperKitTranscriber: Transcriber {
         self.model = model
     }
 
+    /// Where model weights are cached.
+    ///
+    /// WhisperKit delegates downloads to HubApi, which defaults to
+    /// ~/Documents/huggingface. ~/Documents is TCC-protected on macOS: a process
+    /// launched from a terminal inherits the terminal's access, but one started by
+    /// launchd has none of its own, so model loading fails with a permission
+    /// error. Application Support sits outside TCC, so caching there keeps the
+    /// LaunchAgent working without granting parrot access to Documents — fewer
+    /// privileges, not more.
+    static var modelCacheDirectory: URL {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return base.appendingPathComponent("parrot", isDirectory: true)
+    }
+
     /// Loads the model into memory; downloads first if not already on disk.
     /// Call once at startup so the first hotkey press isn't blocked on model
     /// download/load.
@@ -20,7 +37,17 @@ actor WhisperKitTranscriber: Transcriber {
             throw TranscriberError.missingEngineID
         }
         FileHandle.standardError.write(Data("loading \(model.id)...\n".utf8))
-        let config = WhisperKitConfig(model: whisperKitID, verbose: false, prewarm: true, load: true)
+
+        let cache = Self.modelCacheDirectory
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+
+        let config = WhisperKitConfig(
+            model: whisperKitID,
+            downloadBase: cache,
+            verbose: false,
+            prewarm: true,
+            load: true
+        )
         pipeline = try await WhisperKit(config)
         FileHandle.standardError.write(Data("✓ \(model.id) ready\n".utf8))
     }
