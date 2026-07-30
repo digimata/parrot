@@ -157,7 +157,9 @@ struct Run: ParsableCommand {
         } catch {
             FileHandle.standardError.write(Data("failed to register hotkey tap: \(error)\n".utf8))
             FileHandle.standardError.write(Data("run `parrot setup` to configure permissions.\n".utf8))
-            throw ExitCode(1)
+            // Exit 0: a missing permission is not transient, and the LaunchAgent's
+            // KeepAlive would otherwise restart us into an endless prompt loop.
+            throw ExitCode(0)
         }
 
         let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
