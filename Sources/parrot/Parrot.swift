@@ -34,9 +34,20 @@ struct Run: ParsableCommand {
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
 
+    @Option(
+        name: .long,
+        help: "Push-to-talk key. Options: \(HotkeyMonitor.Hotkey.allCases.map(\.rawValue).joined(separator: ", "))."
+    )
+    var hotkey: HotkeyMonitor.Hotkey?
+
     func run() throws {
+        let selectedHotkey = hotkey ?? HotkeyPreferences.selected
+        if let hotkey {
+            HotkeyPreferences.selected = hotkey
+        }
+
         if !skipDoctor {
-            let checks = DoctorReport.run()
+            let checks = DoctorReport.run(checkFnMapping: selectedHotkey == .fn)
             if !DoctorReport.allOK(checks) {
                 FileHandle.standardError.write(Data("startup checks failed:\n".utf8))
                 DoctorReport.print(checks)
@@ -81,14 +92,18 @@ struct Run: ParsableCommand {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        let monitor = HotkeyMonitor(debug: debugHotkey)
+        let monitor = HotkeyMonitor(hotkey: selectedHotkey, debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
         let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
-        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
+        let menuBar = MainActor.assumeIsolated {
+            MenuBarController(modelID: chosenModel.id, hotkey: selectedHotkey) {
+                monitor.setHotkey($0)
+            }
+        }
 
         do {
             try monitor.start { event in
@@ -169,10 +184,14 @@ struct Run: ParsableCommand {
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
+        FileHandle.standardError.write(Data(
+            "listening on \(selectedHotkey.rawValue) hold · model: \(chosenModel.id) · ^C to quit\n".utf8
+        ))
         app.run()
     }
 }
+
+extension HotkeyMonitor.Hotkey: ExpressibleByArgument {}
 
 struct Doctor: ParsableCommand {
     static let configuration = CommandConfiguration(
