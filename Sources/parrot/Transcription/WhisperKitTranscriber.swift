@@ -5,10 +5,13 @@ actor WhisperKitTranscriber: Transcriber {
     let modelID: String
     private let model: TranscriptionModel
     private var pipeline: WhisperKit?
+    /// ISO 639-1 code, or nil to let Whisper guess.
+    private let language: String?
 
-    init(model: TranscriptionModel) {
+    init(model: TranscriptionModel, language: String? = nil) {
         self.modelID = model.id
         self.model = model
+        self.language = language
     }
 
     /// Loads the model into memory; downloads first if not already on disk.
@@ -29,7 +32,18 @@ actor WhisperKitTranscriber: Transcriber {
         if pipeline == nil { try await warmUp() }
         guard let pipeline else { throw TranscriberError.notLoaded }
 
-        let results = try await pipeline.transcribe(audioArray: audio)
+        // Without an explicit language Whisper guesses from the first seconds
+        // of audio. On short dictation clips it guesses badly — Serbian comes
+        // back decoded as Spanish. Pin it when the user told us.
+        var options = DecodingOptions()
+        options.task = .transcribe
+        if let language {
+            options.language = language
+            options.detectLanguage = false
+            options.usePrefillPrompt = true
+        }
+
+        let results = try await pipeline.transcribe(audioArray: audio, decodeOptions: options)
         let raw = results.map(\.text).joined(separator: " ")
         return Self.sanitize(raw)
     }

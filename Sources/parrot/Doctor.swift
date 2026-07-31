@@ -16,12 +16,12 @@ struct Check {
 }
 
 enum DoctorReport {
-    static func run() -> [Check] {
-        [
-            checkMicrophone(),
-            checkAccessibility(),
-            checkFnKeyMapping(),
-        ]
+    /// `includeFnKey: false` when the hotkey has been rebound off Fn — the
+    /// 🌐-key setting is then irrelevant and shouldn't block startup.
+    static func run(includeFnKey: Bool = true) -> [Check] {
+        var checks = [checkMicrophone(), checkAccessibility()]
+        if includeFnKey { checks.append(checkFnKeyMapping()) }
+        return checks
     }
 
     static func checkMicrophone() -> Check {

@@ -1,5 +1,6 @@
 import AppKit
 import ArgumentParser
+import CoreGraphics
 import Foundation
 import WhisperKit
 
@@ -11,6 +12,65 @@ struct Parrot: ParsableCommand {
         subcommands: [Run.self, Setup.self, Doctor.self, Models.self, Install.self],
         defaultSubcommand: Run.self
     )
+}
+
+/// Which modifier acts as the push-to-talk key.
+///
+/// The left/right variants matter: CGEventFlags carries device-dependent low
+/// bits that distinguish the two physical keys, and `flags.contains(mask)`
+/// requires *all* bits of the mask, so a side-specific raw value matches only
+/// that side. Plain `.maskControl` etc. would match either side.
+struct Hotkey: ExpressibleByArgument, Decodable {
+    /// How the key is named in the UI ("hold X to dictate").
+    let label: String
+    let mask: CGEventFlags
+    let isFn: Bool
+
+    static let table: [(String, UInt64, String)] = [
+        ("fn", CGEventFlags.maskSecondaryFn.rawValue, "fn"),
+        ("right-command", 0x10_0010, "right ⌘"),
+        ("left-command", 0x10_0008, "left ⌘"),
+        ("right-option", 0x8_0040, "right ⌥"),
+        ("left-option", 0x8_0020, "left ⌥"),
+        ("right-control", 0x4_2100, "right control"),
+        ("left-control", 0x4_0101, "left control"),
+        ("right-shift", 0x2_0004, "right shift"),
+        ("left-shift", 0x2_0002, "left shift"),
+    ]
+
+    init?(argument: String) {
+        if let hit = Self.table.first(where: { $0.0 == argument }) {
+            self.init(label: hit.2, mask: CGEventFlags(rawValue: hit.1), isFn: hit.0 == "fn")
+            return
+        }
+        // Escape hatch: a raw flags value copied straight out of
+        // --debug-hotkey, e.g. "0x80140". Keyboards vary enough (and
+        // third-party remappers exist) that no fixed list covers everyone.
+        let hex = argument.hasPrefix("0x") ? String(argument.dropFirst(2)) : argument
+        if let value = UInt64(hex, radix: 16), value != 0 {
+            self.init(label: "0x" + hex, mask: CGEventFlags(rawValue: value), isFn: false)
+            return
+        }
+        return nil
+    }
+
+    var defaultValueDescription: String { label }
+
+    private init(label: String, mask: CGEventFlags, isFn: Bool) {
+        self.label = label
+        self.mask = mask
+        self.isFn = isFn
+    }
+
+    init(from decoder: any Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        guard let parsed = Hotkey(argument: raw) else {
+            throw DecodingError.dataCorrupted(
+                .init(codingPath: [], debugDescription: "unknown hotkey: \(raw)")
+            )
+        }
+        self = parsed
+    }
 }
 
 struct Run: ParsableCommand {
@@ -34,9 +94,35 @@ struct Run: ParsableCommand {
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
 
+    @Option(
+        name: .long,
+        help: """
+            ISO 639-1 language code to transcribe in, e.g. sr, hr, de. \
+            Omit to let Whisper auto-detect — reliable on long audio, much \
+            less so on the few-second clips dictation produces.
+            """
+    )
+    var language: String?
+
+    @Option(
+        name: .long,
+        help: ArgumentHelp(
+            """
+            Modifier to hold: fn, right-command, left-command, right-option, \
+            left-option, right-control, left-control, right-shift, left-shift \
+            — or a raw flags value such as 0x80140. Non-Apple keyboards often \
+            handle fn in firmware so it never reaches macOS; run \
+            --debug-hotkey, hold the key you want, and pass the flags value it \
+            prints.
+            """,
+            valueName: "key"
+        )
+    )
+    var hotkey: Hotkey = Hotkey(argument: "fn")!
+
     func run() throws {
         if !skipDoctor {
-            let checks = DoctorReport.run()
+            let checks = DoctorReport.run(includeFnKey: hotkey.isFn)
             if !DoctorReport.allOK(checks) {
                 FileHandle.standardError.write(Data("startup checks failed:\n".utf8))
                 DoctorReport.print(checks)
@@ -61,7 +147,7 @@ struct Run: ParsableCommand {
             chosenModel = m
         }
 
-        let transcriber = WhisperKitTranscriber(model: chosenModel)
+        let transcriber = WhisperKitTranscriber(model: chosenModel, language: language)
         let warmupSemaphore = DispatchSemaphore(value: 0)
         var warmupError: Error?
         Task.detached {
@@ -78,17 +164,26 @@ struct Run: ParsableCommand {
             throw ExitCode(1)
         }
 
+        // Ask up front rather than on the first key press: the prompt is a GUI
+        // dialog and blocks, so triggering it mid-dictation swallows the take.
+        if !AudioCapture.requestAccess() {
+            FileHandle.standardError.write(Data(
+                "microphone access denied — grant it in System Settings → Privacy & Security → Microphone (for the app you launched parrot from), then quit and relaunch.\n".utf8
+            ))
+            throw ExitCode(1)
+        }
+
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        let monitor = HotkeyMonitor(debug: debugHotkey)
+        let monitor = HotkeyMonitor(mask: hotkey.mask, debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
         let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
-        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
+        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id, hotkeyLabel: hotkey.label) }
 
         do {
             try monitor.start { event in
@@ -169,7 +264,7 @@ struct Run: ParsableCommand {
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
+        FileHandle.standardError.write(Data("listening on \(hotkey.label) hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
         app.run()
     }
 }

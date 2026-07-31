@@ -8,6 +8,33 @@ final class AudioCapture {
     enum CaptureError: Error {
         case engineStartFailed(Error)
         case converterCreationFailed
+        case microphoneNotAuthorized
+    }
+
+    /// Ask for microphone access and wait for the answer.
+    ///
+    /// Without this the first `engine.start()` fails with a bare CoreAudio
+    /// -10868 ("format not supported"): an unauthorized input node reports a
+    /// 0 ch / 0 Hz format, which is unrelated to anything the user can act on.
+    /// The prompt is a GUI dialog, so this only works when the process was
+    /// launched from a GUI session — over SSH it returns false.
+    @discardableResult
+    static func requestAccess() -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            let sem = DispatchSemaphore(value: 0)
+            var granted = false
+            AVCaptureDevice.requestAccess(for: .audio) { ok in
+                granted = ok
+                sem.signal()
+            }
+            sem.wait()
+            return granted
+        default:
+            return false
+        }
     }
 
     static let targetSampleRate: Double = 16_000
@@ -25,9 +52,11 @@ final class AudioCapture {
     /// Begin recording. Idempotent — calling while already recording is a no-op.
     func start() throws {
         guard !isRecording else { return }
+        guard AudioCapture.requestAccess() else {
+            throw CaptureError.microphoneNotAuthorized
+        }
 
         let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
 
         let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -36,18 +65,23 @@ final class AudioCapture {
             interleaved: false
         )!
 
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw CaptureError.converterCreationFailed
-        }
-        self.converter = converter
-
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         lock.unlock()
+        converter = nil
 
-        // Tap with input format; convert inside the callback.
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            self?.process(buffer: buffer, converter: converter, targetFormat: targetFormat)
+        // format: nil means "whatever the node is actually running at".
+        // Passing `input.outputFormat(forBus: 0)` explicitly looks equivalent
+        // but is not: the value read before the engine starts can disagree
+        // with the hardware format the node ends up with, and AVAudioEngine
+        // then throws an uncatchable Objective-C exception ("Failed to create
+        // tap due to format mismatch") that takes the whole process down.
+        // The converter is built lazily from the first buffer we actually see.
+        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
+            guard let self else { return }
+            guard let converter = self.converterFor(inputFormat: buffer.format, target: targetFormat)
+            else { return }
+            self.process(buffer: buffer, converter: converter, targetFormat: targetFormat)
         }
 
         engine.prepare()
@@ -74,6 +108,17 @@ final class AudioCapture {
         samples.removeAll(keepingCapacity: true)
         lock.unlock()
         return captured
+    }
+
+    /// Cache a converter per input format. The tap callback runs on a realtime
+    /// audio thread, so this must not allocate on every buffer.
+    private func converterFor(inputFormat: AVAudioFormat, target: AVAudioFormat) -> AVAudioConverter? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let converter, converter.inputFormat == inputFormat { return converter }
+        let made = AVAudioConverter(from: inputFormat, to: target)
+        converter = made
+        return made
     }
 
     private func process(
