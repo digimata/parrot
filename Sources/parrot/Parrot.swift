@@ -50,7 +50,9 @@ struct Run: ParsableCommand {
             guard let m = ModelRegistry.find(id) else {
                 FileHandle.standardError.write(Data("unknown model: \(id)\n".utf8))
                 FileHandle.standardError.write(Data("run `parrot models list` to see options.\n".utf8))
-                throw ExitCode(1)
+                // Exit 0 for the same reason as a missing permission: a bad model id
+                // is not transient, and KeepAlive would relaunch us forever.
+                throw ExitCode(0)
             }
             chosenModel = m
         } else {
