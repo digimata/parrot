@@ -62,6 +62,16 @@ trap 'rm -rf "$TMP"' EXIT
 dim "→ downloading ${ASSET}..."
 curl -fsSL "$URL" -o "$TMP/${ASSET}"
 
+# The release workflow publishes ${ASSET}.sha256 alongside the archive.
+# Verify it: this script installs an unsigned binary and strips its
+# quarantine flag, so the checksum is the only integrity check there is.
+dim "→ verifying checksum..."
+curl -fsSL "${URL}.sha256" -o "$TMP/${ASSET}.sha256"
+( cd "$TMP" && shasum -a 256 -c "${ASSET}.sha256" >/dev/null ) || {
+    red "checksum mismatch for ${ASSET} — refusing to install"
+    exit 1
+}
+
 dim "→ extracting..."
 tar -xzf "$TMP/${ASSET}" -C "$TMP"
 
