@@ -19,7 +19,7 @@ The installer drops the binary in `/usr/local/bin/parrot`. Builds are unsigned f
 1. **Run it.** Either `parrot install --launch-at-login` (daemonized, runs forever, lives in the menu bar), or `parrot` in any terminal tab.
 2. **Click into the text field you want to dictate into** — Messages, the address bar, a Slack thread, anywhere a cursor blinks.
 3. **Hold the `fn` key, speak, release.** A small pill appears at the bottom of the screen while the mic is hot.
-4. **The transcript types itself in at the cursor** when you release. Usually within 200-300ms.
+4. **The transcript types itself in at the cursor** when you release. Usually within 200-300ms. If no editable text field is focused, a popover keeps the transcript available to copy.
 
 That's it. There is no record button, no stop button, no "send" — `fn` is the whole interface.
 

@@ -89,6 +89,7 @@ struct Run: ParsableCommand {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
         let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
+        let fallbackPopover = MainActor.assumeIsolated { TranscriptFallbackPopover() }
 
         do {
             try monitor.start { event in
@@ -98,6 +99,7 @@ struct Run: ParsableCommand {
                         try capture.start()
                         FileHandle.standardError.write(Data("● recording\n".utf8))
                         MainActor.assumeIsolated {
+                            fallbackPopover.hide()
                             overlay?.show(.recording)
                             menuBar.setRecording(true)
                         }
@@ -140,9 +142,14 @@ struct Run: ParsableCommand {
                                 String(format: "→ %.2fs · %@\n", elapsed, text).utf8
                             ))
                             await MainActor.run {
-                                TextInjector.inject(text)
                                 overlay?.hide()
                                 menuBar.setRecording(false)
+                                guard !text.isEmpty else { return }
+                                if FocusedTextTarget.isEditable {
+                                    TextInjector.inject(text)
+                                } else {
+                                    fallbackPopover.show(text)
+                                }
                             }
                         } catch {
                             FileHandle.standardError.write(Data("transcription failed: \(error)\n".utf8))
