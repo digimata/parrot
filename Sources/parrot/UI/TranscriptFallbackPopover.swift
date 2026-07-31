@@ -20,7 +20,7 @@ final class TranscriptFallbackPopover {
 
     private func makePanel(transcript: String) -> NSPanel {
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 164),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 148),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -60,12 +60,7 @@ final class TranscriptFallbackPopover {
     }
 
     private func positionAtBottomCenter(_ panel: NSPanel) {
-        let pointer = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first {
-            NSMouseInRect(pointer, $0.frame, false)
-        } ?? NSScreen.main
-        guard let screen else { return }
-
+        guard let screen = NSScreen.main else { return }
         let visible = screen.visibleFrame
         panel.setFrameOrigin(
             NSPoint(
@@ -76,20 +71,26 @@ final class TranscriptFallbackPopover {
     }
 }
 
+private enum TranscriptFallbackStyle {
+    static let background = Color(red: 16/255, green: 18/255, blue: 18/255)
+    static let accent = Color(red: 181/255, green: 209/255, blue: 255/255)
+}
+
 private struct TranscriptFallbackView: View {
     let transcript: String
     let onCopy: () -> Void
     let onDismiss: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 Image(systemName: "text.cursor")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(TranscriptFallbackStyle.accent)
 
                 Text("No text field selected")
                     .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
 
                 Spacer()
 
@@ -98,21 +99,27 @@ private struct TranscriptFallbackView: View {
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.white.opacity(0.65))
                 .help("Dismiss")
             }
 
             Text(transcript)
                 .font(.system(size: 13))
-                .foregroundStyle(.primary)
+                .foregroundStyle(.white)
                 .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
                 .textSelection(.enabled)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(
+                    Color.white.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: 10)
+                )
 
             HStack {
-                Text("Select a text field before your next recording.")
+                Text("Copy it, then select a text field.")
                     .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.65))
 
                 Spacer()
 
@@ -120,16 +127,21 @@ private struct TranscriptFallbackView: View {
                     Label("Copy", systemImage: "doc.on.doc")
                         .font(.system(size: 12, weight: .semibold))
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(.plain)
+                .foregroundStyle(TranscriptFallbackStyle.background)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    TranscriptFallbackStyle.accent,
+                    in: Capsule()
+                )
             }
         }
-        .padding(18)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(
             RoundedRectangle(cornerRadius: 18)
-                .strokeBorder(.white.opacity(0.16))
+                .fill(TranscriptFallbackStyle.background)
         )
-        .padding(2)
     }
 }
