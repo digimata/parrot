@@ -196,9 +196,13 @@ struct Models: ParsableCommand {
 
     struct List: ParsableCommand {
         func run() throws {
+            // Column width follows the longest id: `padding(toLength:)` truncates
+            // when the string is longer, and a truncated id cannot be copied into
+            // `parrot models download`.
+            let width = ModelRegistry.shared.map(\.id.count).max() ?? 26
             for m in ModelRegistry.shared {
                 let star = m.recommended ? "★" : " "
-                let id = m.id.padding(toLength: 26, withPad: " ", startingAt: 0)
+                let id = m.id.padding(toLength: width, withPad: " ", startingAt: 0)
                 let langs = "[\(m.languages.joined(separator: ","))]"
                     .padding(toLength: 9, withPad: " ", startingAt: 0)
                 let size = String(format: "%5d MB", m.sizeMB)
