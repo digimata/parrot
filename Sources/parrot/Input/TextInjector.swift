@@ -33,7 +33,6 @@ enum TextInjector {
         down?.post(tap: .cgSessionEventTap)
 
         let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-        up?.keyboardSetUnicodeString(stringLength: length, unicodeString: &chunk)
         up?.post(tap: .cgSessionEventTap)
     }
 }
