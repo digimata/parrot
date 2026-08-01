@@ -19,6 +19,7 @@ enum DoctorReport {
     static func run() -> [Check] {
         [
             checkMicrophone(),
+            checkInputGain(),
             checkAccessibility(),
             checkFnKeyMapping(),
         ]
@@ -44,6 +45,24 @@ enum DoctorReport {
         @unknown default:
             return Check(name: "microphone", status: .fail("unknown state"), remediation: nil)
         }
+    }
+
+    /// Recording raises a turned-down microphone on its own, but a device that
+    /// refuses the write would otherwise fail silently — and input gain is the
+    /// largest measured accuracy factor there is.
+    static func checkInputGain() -> Check {
+        let device = InputDeviceStore().resolved()?.id ?? InputGain.defaultInput()
+        guard let state = InputGain.state(of: device), !state.adjustable,
+              state.level < InputGain.floor
+        else {
+            return Check(name: "input gain", status: .ok, remediation: nil)
+        }
+        return Check(
+            name: "input gain",
+            status: .warn(String(format: "%.0f%% and this device will not let parrot raise it",
+                                 state.level * 100)),
+            remediation: "System Settings → Sound → Input → raise the input volume"
+        )
     }
 
     static func checkAccessibility() -> Check {
