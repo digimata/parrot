@@ -34,6 +34,14 @@ struct Run: ParsableCommand {
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
 
+    /// Both purge sites report the same way; the number is the only reason the
+    /// user would care that a purge happened at all.
+    private func reclaim(_ bytes: Int64) {
+        guard bytes > 0 else { return }
+        FileHandle.standardError.write(Data(
+            "freed \(ModelWeights.describe(bytes: bytes)) of unused models\n".utf8))
+    }
+
     func run() throws {
         if !skipDoctor {
             let checks = DoctorReport.run()
@@ -45,23 +53,18 @@ struct Run: ParsableCommand {
             }
         }
 
-        let chosenModel: TranscriptionModel
-        if let id = model {
-            guard let m = ModelRegistry.find(id) else {
+        let models = ModelStore()
+        guard let chosenModel = models.resolved(flag: model) else {
+            if let id = model {
                 FileHandle.standardError.write(Data("unknown model: \(id)\n".utf8))
                 FileHandle.standardError.write(Data("run `parrot models list` to see options.\n".utf8))
                 throw ExitCode(1)
             }
-            chosenModel = m
-        } else {
-            guard let m = ModelRegistry.recommended() else {
-                FileHandle.standardError.write(Data("no models registered\n".utf8))
-                throw ExitCode(1)
-            }
-            chosenModel = m
+            FileHandle.standardError.write(Data("no models registered\n".utf8))
+            throw ExitCode(1)
         }
 
-        let transcriber = WhisperKitTranscriber(model: chosenModel)
+        let transcriber = ActiveTranscriber(model: chosenModel)
         let warmupSemaphore = DispatchSemaphore(value: 0)
         var warmupError: Error?
         Task.detached {
@@ -78,6 +81,11 @@ struct Run: ParsableCommand {
             throw ExitCode(1)
         }
 
+        // Whatever an earlier run left behind is dead weight now that this model
+        // is loaded — except the one switched away from, which the user is one
+        // menu click from wanting again.
+        reclaim(ModelWeights.purge(keeping: [chosenModel, models.previous].compactMap { $0 }))
+
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
@@ -88,7 +96,27 @@ struct Run: ParsableCommand {
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
-        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
+        let menuBar = MainActor.assumeIsolated { MenuBarController(model: chosenModel) }
+        MainActor.assumeIsolated {
+            menuBar.onModel = { [weak menuBar] next in
+                Task {
+                    do {
+                        let outgoing = try await transcriber.use(next) { fraction in
+                            Task { @MainActor in menuBar?.setSwitchProgress(fraction) }
+                        }
+                        // Only now: a model that failed to load is not what the
+                        // daemon should come back as after a restart.
+                        models.selectedID = next.id
+                        models.previousID = outgoing?.id
+                        reclaim(ModelWeights.purge(keeping: [next, outgoing].compactMap { $0 }))
+                        await MainActor.run { menuBar?.setModel(next) }
+                    } catch {
+                        FileHandle.standardError.write(Data("switch to \(next.id) failed: \(error)\n".utf8))
+                        await MainActor.run { menuBar?.setModelFailed(next) }
+                    }
+                }
+            }
+        }
 
         do {
             try monitor.start { event in

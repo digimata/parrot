@@ -4,14 +4,21 @@ import AppKit
 /// a glance and provides the only persistent control surface for the daemon
 /// (since we run as `.accessory` — no dock icon, no main window).
 @MainActor
-final class MenuBarController {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let modelLabel: NSMenuItem
     private let stateLabel: NSMenuItem
-    private let modelID: String
+    private let modelItem: NSMenuItem
+    private var model: TranscriptionModel
+    /// The model being switched to. Set on click so the menu answers the click
+    /// rather than the download, which can take minutes.
+    private var pending: TranscriptionModel?
+    /// Set after construction: switching needs the daemon, and the daemon needs
+    /// the controller it reports back to.
+    var onModel: ((TranscriptionModel) -> Void)?
 
-    init(modelID: String) {
-        self.modelID = modelID
+    init(model: TranscriptionModel) {
+        self.model = model
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         let menu = NSMenu()
@@ -21,9 +28,21 @@ final class MenuBarController {
         stateLabel.isEnabled = false
         menu.addItem(stateLabel)
 
-        modelLabel = NSMenuItem(title: "model: \(modelID)", action: nil, keyEquivalent: "")
+        modelLabel = NSMenuItem(title: "model: \(model.id)", action: nil, keyEquivalent: "")
         modelLabel.isEnabled = false
         menu.addItem(modelLabel)
+
+        modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
+        let modelMenu = NSMenu()
+        modelMenu.autoenablesItems = false
+        modelItem.submenu = modelMenu
+        menu.addItem(modelItem)
+
+        let example = NSMenuItem(
+            title: "Edit dictation examples…",
+            action: #selector(editDictationExamples),
+            keyEquivalent: "")
+        menu.addItem(example)
 
         menu.addItem(.separator())
 
@@ -32,11 +51,82 @@ final class MenuBarController {
             action: #selector(quitClicked),
             keyEquivalent: "q"
         )
+        super.init()
+
+        example.target = self
         quit.target = self
         menu.addItem(quit)
 
+        // Rebuild the model list on open so a switch in flight is reflected
+        // without the menu holding its own copy of the state.
+        menu.delegate = self
+
         statusItem.menu = menu
         configureButton(recording: false)
+    }
+
+    /// Creates the file on first use so the format is explained where it is
+    /// edited, then hands it to whatever opens .txt.
+    @objc private func editDictationExamples() {
+        do {
+            try DictationExamples.ensureFileExists()
+            NSWorkspace.shared.open(DictationExamples.file)
+        } catch {
+            FileHandle.standardError.write(Data("could not open dictation example: \(error)\n".utf8))
+        }
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard let modelSubmenu = modelItem.submenu else { return }
+        modelSubmenu.removeAllItems()
+        for candidate in ModelRegistry.shared {
+            let active = candidate.id == model.id
+            let arriving = candidate.id == pending?.id
+            let item = NSMenuItem(
+                title: "\(candidate.displayName) · \(candidate.sizeMB) MB",
+                action: #selector(modelSelected),
+                keyEquivalent: "")
+            item.target = self
+            item.representedObject = candidate.id
+            // A dash rather than a tick while it arrives: the choice is taken,
+            // the model is not ready, and pretending otherwise is what made the
+            // menu look like it ignored the click.
+            item.state = arriving ? .mixed : (active ? .on : .off)
+            // One switch at a time, and the model in use is already here.
+            item.isEnabled = pending == nil && !active
+            modelSubmenu.addItem(item)
+        }
+    }
+
+    /// Hands the choice to the daemon, which loads it before dropping the model
+    /// in use. The label follows on `setModel` once that succeeds.
+    @objc private func modelSelected(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let chosen = ModelRegistry.find(id), chosen.id != model.id
+        else { return }
+        pending = chosen
+        modelLabel.title = "loading \(chosen.id)…"
+        onModel?(chosen)
+    }
+
+    /// Download fraction, which is the only part either engine reports. Loading
+    /// afterwards shows as the same line without a number.
+    func setSwitchProgress(_ fraction: Double) {
+        guard let pending else { return }
+        modelLabel.title = fraction < 1
+            ? String(format: "downloading %@… %.0f%%", pending.id, fraction * 100)
+            : "loading \(pending.id)…"
+    }
+
+    func setModel(_ model: TranscriptionModel) {
+        self.model = model
+        self.pending = nil
+        modelLabel.title = "model: \(model.id)"
+    }
+
+    func setModelFailed(_ attempted: TranscriptionModel) {
+        pending = nil
+        modelLabel.title = "model: \(model.id) · \(attempted.id) failed"
     }
 
     func setRecording(_ recording: Bool) {
