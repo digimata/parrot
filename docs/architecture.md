@@ -5,9 +5,9 @@
 1. **CLI executable.** Single binary, launched from the terminal. No menubar, no dock icon, no settings window.
 2. **Push-to-talk.** Hold Fn, speak, release — transcript appears at the cursor.
 3. **Minimal recording feedback.** A small floating pill at the bottom of the screen while recording, so the user knows the mic is hot. Click-through, borderless, hidden when idle.
-4. **On-device.** No network calls for transcription. Audio never leaves the machine.
-5. **Pluggable models.** Whisper out of the box; Parakeet (or future engines) via a JSON-driven registry.
-6. **Native and lean.** One Swift Package executable target. No sidecar processes. No HTTP servers.
+4. **Local audio boundary.** WhisperKit runs in-process; optional Parakeet calls stay on a validated loopback service. Audio never leaves the machine.
+5. **Pluggable models.** Whisper out of the box; Parakeet is a user-managed local-service option.
+6. **Native and lean.** One Swift Package executable target. Parrot starts no sidecar process or HTTP server.
 
 ## Non-goals
 
@@ -20,7 +20,7 @@
 
 ## Why Swift
 
-- **CoreML / ANE access.** WhisperKit and FluidAudio are Swift-native and run inference on the Apple Neural Engine — lower power, lower latency than CPU/GPU paths in Rust.
+- **CoreML / ANE access.** WhisperKit runs in process through CoreML and the Apple Neural Engine; the selected Parakeet service uses CPU/ONNX Runtime.
 - **No FFI for platform APIs.** `AVAudioEngine`, `CGEventTap`, `CGEvent`, `AXIsProcessTrusted`, `NSWindow` — all first-party, no bindings to maintain.
 - **Permissions plumbing** (microphone, accessibility) is dramatically smoother in a Swift binary than via Rust crates.
 - **AppKit overlay for free.** The recording indicator (see below) is a borderless `NSWindow` — trivial in Swift, awkward in Rust.
@@ -50,9 +50,13 @@ $ parrot
                                     │  │ WhisperKit │  │
                                     │  └────────────┘  │
                                     │  ┌────────────┐  │
-                                    │  │  Parakeet  │  │
+                                    │  │  Parakeet  │──┼── loopback HTTP
                                     │  └────────────┘  │
                                     └────────┬─────────┘
+                                             │            ┌──────────────────┐
+                                             │            │ User-managed     │
+                                             │            │ Parakeet service │
+                                             │            └──────────────────┘
                                              │ String
                                              ▼
                                     ┌──────────────────┐
@@ -87,6 +91,7 @@ Global hotkey via `CGEventTap` (requires Accessibility permission). Default: **h
 
 ```swift
 protocol Transcriber {
+    func prepare() async throws
     func transcribe(_ audio: [Float]) async throws -> String
     var modelID: String { get }
 }
@@ -95,7 +100,11 @@ protocol Transcriber {
 Concrete implementations:
 
 - `WhisperKitTranscriber` — wraps the `WhisperKit` package. CoreML, ANE-accelerated.
-- `ParakeetTranscriber` — wraps `FluidAudio` (or direct CoreML) for NVIDIA Parakeet TDT.
+- `ParakeetTranscriber` — a thin domain adapter that delegates readiness and
+  transcription to an injected `ParakeetAdapter`.
+- `ParakeetHTTPAdapter` — validates a loopback-only URL, health-checks the
+  user-managed service, encodes in-memory WAV multipart requests, and decodes
+  its response. It owns all HTTP and authentication details.
 
 Adding an engine = one new file conforming to `Transcriber`.
 
@@ -186,11 +195,13 @@ Initial registry:
 
 | Engine | Model | Size | Notes |
 |---|---|---|---|
-| WhisperKit | `whisper-base.en` | ~80 MB | Fast, English only, low resource |
-| WhisperKit | `whisper-large-v3-turbo` | ~800 MB | Recommended for daily use |
-| Parakeet | `parakeet-tdt-0.6b-v3` | ~600 MB | English, fastest on ANE |
+| WhisperKit | `whisper-base.en` | 145 MB | Recommended; CoreML/ANE, English |
+| WhisperKit | `whisper-large-v3-turbo` | 1,620 MB | Multilingual WhisperKit model |
+| Parakeet | `parakeet-tdt-0.6b-v3` | 670 MB | User-managed local CPU/ONNX service |
 
-Models live in `~/Library/Application Support/parrot/models/`. Not bundled — fetched on first selection or via `parrot models download`.
+WhisperKit models are fetched on first selection or via `parrot models download`.
+Parakeet model files stay with the upstream service; its download command gives
+setup guidance and exits without writing model artifacts.
 
 ## Data flow, end-to-end
 
@@ -203,7 +214,7 @@ Models live in `~/Library/Application Support/parrot/models/`. Not bundled — f
 7. User releases Fn.
 8. `HotkeyMonitor` fires `.released`. Overlay switches to spinner. Status: `transcribing`.
 9. `AudioCapture` stops, hands buffer to active `Transcriber`.
-10. `Transcriber` runs CoreML inference. Returns string.
+10. `Transcriber` runs CoreML inference or calls the selected loopback adapter. Returns string.
 11. `TextInjector` posts the string at the cursor.
 12. Overlay hides. Status: `listening`. Loop.
 13. User hits `^C`. Process exits cleanly.
@@ -236,6 +247,11 @@ parrot/
       Transcriber.swift         # protocol
       WhisperKitTranscriber.swift
       ParakeetTranscriber.swift
+      TranscriberFactory.swift
+
+    Adapters/
+      ParakeetAdapter.swift     # service-specific boundary
+      ParakeetHTTPAdapter.swift # loopback API transport
 
     Models/                     # registry + download pipeline
       ModelRegistry.swift
@@ -267,7 +283,25 @@ Swift's module unit is the **SPM target** (one target = one module = one `import
 
 ## Open questions
 
-- **Parakeet via FluidAudio vs. direct CoreML?** FluidAudio is faster to integrate but adds a dependency. Decide once we benchmark both.
+- **Native Parakeet engine.** A future FluidAudio/CoreML or other native shape
+  would require a separate investigation; the current service is CPU/ONNX
+  Runtime through user-managed Docker.
 - **Hotkey conflicts.** Right-Option is unused on most keyboards but some users remap it. Print a clear error if `CGEventTap` registration fails.
 - **First-run UX.** Bundle `whisper-base.en` so `parrot` works out of the box, or always require an explicit download? Probably the latter — keeps the binary small and the model directory clean.
 - **Code signing.** A self-built unsigned binary works fine locally but accessibility permission persistence is more reliable for signed binaries. Decide if we sign for personal distribution.
+
+## Parakeet service boundary
+
+Parakeet support targets `achetronic/parakeet` v0.8.0 at
+`http://127.0.0.1:5092` by default. Parrot permits only HTTP(S) URLs with an
+explicit port on `127.0.0.1`, `localhost`, or `::1`, and calls `/health` before
+starting the daemon. The startup request has a 30-second deadline; short
+transcriptions have a 15-second deadline and a 25 MiB encoded-WAV limit.
+
+The measured pinned image is `ghcr.io/achetronic/parakeet:0.8.0-int8`: health
+was ready in about two seconds, short-fixture p95 was 309 ms at five seconds
+and 397 ms at ten seconds, and one worker should reserve 2 GiB. The server is
+[Apache-2.0](https://github.com/achetronic/parakeet); the converted ONNX model
+is [CC-BY-4.0](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx).
+These measurements do not establish Parakeet quality equivalence or superiority
+to WhisperKit.

@@ -36,14 +36,51 @@ parrot doctor                          # check permissions + fn key setting
 parrot models list                     # list available models
 parrot models download <id>            # pre-download a model
 parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
+parrot run --model parakeet-tdt-0.6b-v3 --parakeet-url http://127.0.0.1:5092
 parrot --hotkey right-option           # change the push-to-talk key
 parrot --no-overlay                    # disable the bottom-of-screen pill
 ```
+
+## Parakeet local service (optional)
+
+WhisperKit remains the recommended default. `parakeet-tdt-0.6b-v3` instead
+uses a user-managed local HTTP service; Parrot neither installs Docker nor
+downloads the service's model files. Start the pinned server bound only to
+loopback:
+
+```sh
+docker run -d --rm --name parrot-parakeet -p 127.0.0.1:5092:5092 \
+  -e PARAKEET_WORKERS=1 \
+  ghcr.io/achetronic/parakeet:0.8.0-int8
+curl http://127.0.0.1:5092/health
+parrot run --model parakeet-tdt-0.6b-v3
+```
+
+When finished, run `docker stop parrot-parakeet`; `--rm` removes the stopped
+container automatically.
+
+The health endpoint must return `{"status":"ok"}` before Parrot starts.
+Only `127.0.0.1`, `localhost`, and `::1` URLs are accepted; use
+`--parakeet-url` to select another port or loopback spelling. If the service
+uses bearer authentication, set `PARROT_PARAKEET_API_KEY` in the environment;
+do not place the token on the command line.
+
+The measured Apple Silicon Docker runtime reached health in about two seconds,
+used up to 1.47 GiB on short fixtures (reserve 2 GiB per worker), and had
+post-upload p95 latency of 309 ms for five-second clips and 397 ms for
+ten-second clips. This is CPU/ONNX Runtime inference, not WhisperKit's
+CoreML/ANE path. The runtime evidence does not establish a quality comparison
+with WhisperKit.
+
+The server is [Apache-2.0](https://github.com/achetronic/parakeet) and its
+converted NVIDIA Parakeet TDT 0.6B v3 ONNX model is
+[CC-BY-4.0](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx).
 
 ## Stack
 
 - **Swift** — single SPM executable target
 - **WhisperKit** — Whisper inference via CoreML, ANE-accelerated
+- **Parakeet service adapter** — optional loopback HTTP transcription
 - **AVAudioEngine** — mic capture
 - **CGEventTap** — global hotkey
 - **CGEvent** — text injection at cursor

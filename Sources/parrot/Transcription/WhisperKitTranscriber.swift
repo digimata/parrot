@@ -14,7 +14,7 @@ actor WhisperKitTranscriber: Transcriber {
     /// Loads the model into memory; downloads first if not already on disk.
     /// Call once at startup so the first hotkey press isn't blocked on model
     /// download/load.
-    func warmUp() async throws {
+    func prepare() async throws {
         if pipeline != nil { return }
         guard let whisperKitID = model.whisperKitID else {
             throw TranscriberError.missingEngineID
@@ -26,7 +26,7 @@ actor WhisperKitTranscriber: Transcriber {
     }
 
     func transcribe(_ audio: [Float]) async throws -> String {
-        if pipeline == nil { try await warmUp() }
+        if pipeline == nil { try await prepare() }
         guard let pipeline else { throw TranscriberError.notLoaded }
 
         let results = try await pipeline.transcribe(audioArray: audio)
