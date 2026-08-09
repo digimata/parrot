@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: build arm64 macOS binary
+    name: build arm64 macOS app
     runs-on: macos-15
     timeout-minutes: 30
 
@@ -33,6 +33,9 @@ jobs:
       - name: build
         run: swift build -c release --arch arm64
 
+      - name: test
+        run: swift test -c release --arch arm64
+
       - name: stage
         run: |
           BIN=.build/arm64-apple-macosx/release/parrot
@@ -43,10 +46,23 @@ jobs:
       - name: strip
         run: strip -x dist/parrot
 
+      - name: build signed app bundle
+        run: |
+          mkdir -p dist/Parrot.app/Contents/MacOS
+          cp AppBundle/Info.plist dist/Parrot.app/Contents/Info.plist
+          cp dist/parrot dist/Parrot.app/Contents/MacOS/parrot
+          chmod +x dist/Parrot.app/Contents/MacOS/parrot
+          codesign --force --deep --sign - \
+            --identifier com.digimata.parrot \
+            --requirements '=designated => identifier "com.digimata.parrot"' \
+            dist/Parrot.app
+          codesign --verify --deep --strict --verbose=2 dist/Parrot.app
+          codesign -d --requirements - dist/Parrot.app 2>&1 | grep 'identifier "com.digimata.parrot"'
+
       - name: package
         run: |
           cd dist
-          tar -czf parrot-macos-arm64.tar.gz parrot
+          tar -czf parrot-macos-arm64.tar.gz parrot Parrot.app
           shasum -a 256 parrot-macos-arm64.tar.gz > parrot-macos-arm64.tar.gz.sha256
           ls -lh
 

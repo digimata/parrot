@@ -20,28 +20,16 @@ final class RecordingOverlay {
             model.resetLevels()
         }
         guard let window else { return }
-        let needsAppear = !window.isVisible
-        if needsAppear {
+        model.state = state
+        if !window.isVisible {
             positionAtBottomCenter(window)
             window.orderFrontRegardless()
-            // Defer the state change so SwiftUI lays out in the .hidden style
-            // first, then animates to the visible style on the next runloop tick.
-            DispatchQueue.main.async { [model] in
-                model.state = state
-            }
-        } else {
-            model.state = state
         }
     }
 
     func hide() {
         model.state = .hidden
-        // Let the SwiftUI scale+fade animation play out before yanking the
-        // window — otherwise it just pops away.
-        let window = self.window
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            window?.orderOut(nil)
-        }
+        window?.orderOut(nil)
     }
 
     /// Push a new audio level (0…~1). Safe to call from any thread.
@@ -77,7 +65,14 @@ final class RecordingOverlay {
     }
 
     private func positionAtBottomCenter(_ window: NSPanel) {
-        guard let screen = NSScreen.main else { return }
+        // Accessory apps do not reliably have an `NSScreen.main`. Prefer the
+        // display under the pointer so the indicator follows the app being
+        // dictated into, then fall back to the main/first display.
+        let pointer = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(pointer) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen else { return }
         let frame = window.frame
         let visible = screen.visibleFrame
         let x = visible.midX - frame.width / 2
@@ -124,11 +119,7 @@ private struct OverlayPill: View {
                 Capsule()
                     .fill(Color(red: 16/255, green: 18/255, blue: 18/255))
             )
-            .scaleEffect(model.state == .hidden ? 0 : 1)
-            .animation(
-                .timingCurve(0.16, 1, 0.3, 1, duration: 0.3),
-                value: model.state
-            )
+            .accessibilityLabel(accessibilityLabel)
     }
 
     @ViewBuilder
@@ -144,11 +135,23 @@ private struct OverlayPill: View {
                 .frame(width: 54, height: 22)
         }
     }
+
+    private var accessibilityLabel: String {
+        switch model.state {
+        case .hidden:
+            return "Parrot idle"
+        case .recording:
+            return "Parrot recording"
+        case .transcribing:
+            return "Parrot transcribing"
+        }
+    }
 }
 
 private struct Waveform: View {
     let levels: [Float]
     private let color = Color(red: 181/255.0, green: 209/255.0, blue: 255/255.0)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(alignment: .center, spacing: 4) {
@@ -158,7 +161,7 @@ private struct Waveform: View {
                     .frame(width: 2.5)
                     .frame(maxHeight: .infinity)
                     .scaleEffect(y: max(0.10, CGFloat(level)), anchor: .center)
-                    .animation(.easeOut(duration: 0.09), value: level)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.09), value: level)
             }
         }
     }

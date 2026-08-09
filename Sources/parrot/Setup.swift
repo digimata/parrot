@@ -13,15 +13,18 @@ struct Setup: ParsableCommand {
         print("============")
         print()
         print("Parrot needs two permissions:")
-        print("  1. Accessibility — to detect the Fn key globally and inject text at the cursor.")
-        print("  2. Microphone — to record audio while you hold Fn.")
+        print("  1. Accessibility — to detect Control + Fn/Globe globally and inject text at the cursor.")
+        print("  2. Microphone — to record audio while you hold Control + Fn/Globe.")
         print()
-        print("These attach to your terminal app (Terminal/iTerm/Ghostty/etc.), not parrot itself.")
+        let host = Bundle.main.bundleURL.pathExtension == "app" ? "Parrot" : "your terminal app"
+        print("These attach to \(host).")
         print()
 
         try waitForAccessibility()
         print()
         try waitForMicrophone()
+        print()
+        try prepareSelectedModel()
         print()
         print("✓ all set. Run `parrot` to start the daemon.")
     }
@@ -37,9 +40,12 @@ struct Setup: ParsableCommand {
         _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
 
         print()
-        print("  1. Toggle your terminal on in the Accessibility list.")
+        let host = Bundle.main.bundleURL.pathExtension == "app" ? "Parrot" : "your terminal"
+        print("  1. Toggle \(host) on in the Accessibility list.")
         print("  2. Re-run `parrot setup` — macOS only picks up the grant on a fresh process.")
-        throw ExitCode(0)
+        // Setup is not complete yet. A nonzero exit prevents scripts and the
+        // user from mistaking an opened Settings pane for a granted permission.
+        throw ExitCode(1)
     }
 
     private func waitForMicrophone() throws {
@@ -80,5 +86,24 @@ struct Setup: ParsableCommand {
         task.launchPath = "/usr/bin/open"
         task.arguments = [url]
         try? task.run()
+    }
+
+    private func prepareSelectedModel() throws {
+        let model = try ParrotSettings.selectedModelID().flatMap(ModelRegistry.find)
+            ?? ModelRegistry.recommended()
+        guard let model else {
+            print("✗ no transcription model is registered")
+            throw ExitCode(1)
+        }
+
+        print("→ preparing \(model.id)...")
+        do {
+            try ensureModelDiskSpace(for: model)
+            try warmUpSynchronously(makeTranscriber(for: model))
+            print("✓ transcription model ready")
+        } catch {
+            print("✗ model preparation failed: \(error)")
+            throw ExitCode(1)
+        }
     }
 }

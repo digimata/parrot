@@ -17,7 +17,11 @@ final class MenuBarController {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        stateLabel = NSMenuItem(title: "idle · hold fn to dictate", action: nil, keyEquivalent: "")
+        stateLabel = NSMenuItem(
+            title: "idle · hold control + fn/globe to dictate",
+            action: nil,
+            keyEquivalent: ""
+        )
         stateLabel.isEnabled = false
         menu.addItem(stateLabel)
 
@@ -40,18 +44,35 @@ final class MenuBarController {
     }
 
     func setRecording(_ recording: Bool) {
-        stateLabel.title = recording ? "● recording" : "idle · hold fn to dictate"
+        stateLabel.title = recording ? "● recording" : "idle · hold control + fn/globe to dictate"
+        configureButton(recording: recording)
     }
 
     func setTranscribing() {
         stateLabel.title = "transcribing…"
+        configureButton(recording: false)
+    }
+
+    func setCaptureError(_ message: String) {
+        stateLabel.title = message
+        guard let button = statusItem.button else { return }
+        let image = NSImage(
+            systemSymbolName: "mic.slash",
+            accessibilityDescription: "Parrot microphone unavailable"
+        )
+        image?.isTemplate = true
+        button.image = image
+        button.toolTip = message
     }
 
     private func configureButton(recording: Bool) {
         guard let button = statusItem.button else { return }
-        let image = Self.birdImage()
+        let image = recording
+            ? NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Parrot recording")
+            : Self.birdImage()
         image?.isTemplate = true
         button.image = image
+        button.toolTip = recording ? "Parrot is recording" : "Parrot dictation"
     }
 
     // Inlined Lucide bird SVG. Keeping it in source means the executable has

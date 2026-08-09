@@ -12,18 +12,20 @@ parrot install --launch-at-login   # optional — runs in the background on logi
 
 **Requires:** macOS 14+ on Apple Silicon (M1 or newer). Transcription runs on the Apple Neural Engine via CoreML — so the installer refuses to run on Intel.
 
-The installer drops the binary in `/usr/local/bin/parrot`. Builds are unsigned for now, so the installer strips the quarantine xattr — once you've inspected the script you'll see exactly what it does.
+The installer verifies the release SHA-256, installs an ad-hoc-signed `/Applications/Parrot.app` with the stable `com.digimata.parrot` identity, and links its executable at `/usr/local/bin/parrot`. The stable app identity is what lets macOS retain Accessibility and microphone approval across login launches.
+
+If an existing Parrot login service is running, an update restarts it and waits for a fresh ready signal before reporting success. If the replacement cannot become ready, the installer restores the prior app and service.
 
 ## How to use
 
 1. **Run it.** Either `parrot install --launch-at-login` (daemonized, runs forever, lives in the menu bar), or `parrot` in any terminal tab.
 2. **Click into the text field you want to dictate into** — Messages, the address bar, a Slack thread, anywhere a cursor blinks.
-3. **Hold the `fn` key, speak, release.** A small pill appears at the bottom of the screen while the mic is hot.
-4. **The transcript types itself in at the cursor** when you release. Usually within 200-300ms.
+3. **Hold `Control + Fn/Globe`, speak, release.** A small pill appears at the bottom of the screen while the mic is hot.
+4. **The transcript types itself into the original field** when you release. If you click into another field or switch apps before transcription finishes, Parrot copies the transcript to the clipboard instead of typing it in the wrong place. Paste it with **Command-V**.
 
-That's it. There is no record button, no stop button, no "send" — `fn` is the whole interface.
+That's it. There is no record button, no stop button, no "send" — `Control + Fn/Globe` is the whole interface.
 
-> **Note:** on most modern Macs the `fn` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," `parrot setup` will tell you how to flip it back to plain `fn`.
+> **Note:** on most modern Macs the `Fn/Globe` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," `parrot setup` will tell you how to set it to "Do Nothing."
 
 ## CLI
 
@@ -32,11 +34,12 @@ parrot                                 # run in the foreground (^C to quit)
 parrot setup                           # one-time setup: permissions + model download
 parrot install --launch-at-login       # register a LaunchAgent (background daemon)
 parrot install --uninstall             # remove the LaunchAgent
-parrot doctor                          # check permissions + fn key setting
+parrot doctor                          # check permissions + Fn/Globe key setting
+parrot doctor --live-audio             # also verify real microphone frames
+parrot doctor --model-ready            # also load and verify the selected model
 parrot models list                     # list available models
 parrot models download <id>            # pre-download a model
 parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
-parrot --hotkey right-option           # change the push-to-talk key
 parrot --no-overlay                    # disable the bottom-of-screen pill
 ```
 

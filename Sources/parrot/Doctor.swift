@@ -16,12 +16,23 @@ struct Check {
 }
 
 enum DoctorReport {
-    static func run() -> [Check] {
-        [
+    static func run(
+        includeLiveAudio: Bool = false,
+        modelToVerify: TranscriptionModel? = nil
+    ) -> [Check] {
+        var checks = [
             checkMicrophone(),
             checkAccessibility(),
+            checkHotkeyTap(),
             checkFnKeyMapping(),
         ]
+        if includeLiveAudio {
+            checks.append(checkLiveAudio())
+        }
+        if let modelToVerify {
+            checks.append(checkModelReadiness(modelToVerify))
+        }
+        return checks
     }
 
     static func checkMicrophone() -> Check {
@@ -33,13 +44,13 @@ enum DoctorReport {
             return Check(
                 name: "microphone",
                 status: .warn("not yet requested — will prompt on first recording"),
-                remediation: "run parrot and hold Fn once; macOS will prompt"
+                remediation: "run `parrot setup`, then hold Control + Fn/Globe once"
             )
         case .denied, .restricted:
             return Check(
                 name: "microphone",
                 status: .fail("denied"),
-                remediation: "System Settings → Privacy & Security → Microphone → enable for your terminal"
+                remediation: "System Settings → Privacy & Security → Microphone → enable for \(permissionHostName())"
             )
         @unknown default:
             return Check(name: "microphone", status: .fail("unknown state"), remediation: nil)
@@ -50,12 +61,27 @@ enum DoctorReport {
         if AXIsProcessTrusted() {
             return Check(name: "accessibility", status: .ok, remediation: nil)
         }
-        let parent = parentProcessName() ?? "your terminal"
         return Check(
             name: "accessibility",
             status: .fail("not granted"),
-            remediation: "System Settings → Privacy & Security → Accessibility → enable for \(parent)"
+            remediation: "System Settings → Privacy & Security → Accessibility → enable for \(permissionHostName())"
         )
+    }
+
+    static func checkHotkeyTap() -> Check {
+        let monitor = HotkeyMonitor()
+        do {
+            try monitor.start { _ in }
+            monitor.stop()
+            return Check(name: "global hotkey event tap", status: .ok, remediation: nil)
+        } catch {
+            monitor.stop()
+            return Check(
+                name: "global hotkey event tap",
+                status: .fail("could not create or enable the tap"),
+                remediation: "run the app-bundled `parrot setup`, then restart Parrot"
+            )
+        }
     }
 
     /// macOS routes Fn (🌐) to one of: Do Nothing / Change Input Source / Show Emoji / Start Dictation.
@@ -99,6 +125,71 @@ enum DoctorReport {
         }
     }
 
+    /// Permissions alone do not prove that Core Audio is returning frames.
+    /// This explicit check records briefly, discards the audio, and verifies the
+    /// real input path used by the daemon.
+    static func checkLiveAudio(duration: TimeInterval = 0.75) -> Check {
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
+            return Check(
+                name: "live microphone capture",
+                status: .fail("microphone permission is not granted"),
+                remediation: "run `parrot setup`, then retry `parrot doctor --live-audio`"
+            )
+        }
+
+        let capture = AudioCapture()
+        do {
+            try capture.start()
+        } catch {
+            return Check(
+                name: "live microphone capture",
+                status: .fail("could not start: \(error)"),
+                remediation: "select a working input device in System Settings → Sound → Input, then retry"
+            )
+        }
+
+        Thread.sleep(forTimeInterval: duration)
+        let result = capture.stop()
+        if result.configurationChanged {
+            return Check(
+                name: "live microphone capture",
+                status: .fail("audio device changed during the check"),
+                remediation: "wait for the input device to settle, then retry"
+            )
+        }
+        if let error = result.conversionError {
+            return Check(
+                name: "live microphone capture",
+                status: .fail("audio conversion failed: \(error)"),
+                remediation: "select a working input device in System Settings → Sound → Input, then retry"
+            )
+        }
+        guard !result.samples.isEmpty else {
+            return Check(
+                name: "live microphone capture",
+                status: .fail("no audio frames received"),
+                remediation: "restart Parrot; if this persists, select a working input device and retry"
+            )
+        }
+
+        return Check(name: "live microphone capture", status: .ok, remediation: nil)
+    }
+
+    static func checkModelReadiness(_ model: TranscriptionModel) -> Check {
+        let transcriber = makeTranscriber(for: model)
+        do {
+            try ensureModelDiskSpace(for: model)
+            try warmUpSynchronously(transcriber)
+            return Check(name: "model readiness (\(model.id))", status: .ok, remediation: nil)
+        } catch {
+            return Check(
+                name: "model readiness (\(model.id))",
+                status: .fail("\(error)"),
+                remediation: "free disk space or run `parrot models download \(model.id)`, then retry"
+            )
+        }
+    }
+
     private static func readDefault(domain: String, key: String) -> String? {
         let task = Process()
         task.launchPath = "/usr/bin/defaults"
@@ -136,6 +227,13 @@ enum DoctorReport {
             return nil
         }
         return (s as NSString).lastPathComponent
+    }
+
+    private static func permissionHostName() -> String {
+        if Bundle.main.bundleURL.pathExtension == "app" {
+            return Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Parrot"
+        }
+        return parentProcessName() ?? "your terminal"
     }
 
     static func print(_ checks: [Check]) {
