@@ -11,6 +11,7 @@ enum TextInjector {
         case injected
         case copiedToClipboard
         case clipboardCopyFailed
+        case blockedSecureField
     }
 
     /// Deliver text only if the field that owned focus when recording began is
@@ -22,6 +23,13 @@ enum TextInjector {
         pasteboard: NSPasteboard = .general
     ) -> DeliveryResult {
         guard !text.isEmpty else { return .injected }
+
+        // Re-check at delivery as well as capture start. A user can move into
+        // a password field while recording or while inference is pending; in
+        // that case the transcript must be discarded, never copied globally.
+        if FocusSnapshot.currentFocusIsSecure() {
+            return .blockedSecureField
+        }
 
         if deliveryGuard?.canInjectIntoOriginalFocus() == true {
             inject(text)

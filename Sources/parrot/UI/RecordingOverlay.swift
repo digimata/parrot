@@ -21,8 +21,8 @@ final class RecordingOverlay {
         }
         guard let window else { return }
         model.state = state
+        positionAtBottomCenter(window)
         if !window.isVisible {
-            positionAtBottomCenter(window)
             window.orderFrontRegardless()
         }
     }
@@ -42,7 +42,7 @@ final class RecordingOverlay {
     private func ensureWindow() {
         if window != nil { return }
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 96, height: 44),
+            contentRect: NSRect(x: 0, y: 0, width: 196, height: 44),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -79,6 +79,20 @@ final class RecordingOverlay {
         let y = visible.minY + 32
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
+}
+
+@MainActor
+func announceParrotState(_ text: String) {
+    guard !text.isEmpty else { return }
+    let userInfo: [NSAccessibility.NotificationUserInfoKey: Any] = [
+        .announcement: text,
+        .priority: NSAccessibilityPriorityLevel.high.rawValue,
+    ]
+    NSAccessibility.post(
+        element: NSApp as Any,
+        notification: .announcementRequested,
+        userInfo: userInfo
+    )
 }
 
 /// Observable state for the SwiftUI pill.
@@ -125,14 +139,28 @@ private struct OverlayPill: View {
     @ViewBuilder
     private var content: some View {
         switch model.state {
-        case .hidden, .recording:
-            Waveform(levels: model.levels)
-                .frame(width: 54, height: 22)
+        case .hidden:
+            EmptyView()
+        case .recording:
+            HStack(spacing: 10) {
+                Waveform(levels: model.levels)
+                    .frame(width: 54, height: 22)
+                Text("⌃ + 🌐 to stop")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+            }
+            .frame(width: 168, height: 22)
         case .transcribing:
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.8)
-                .frame(width: 54, height: 22)
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.8)
+                Text("Transcribing…")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.82))
+            }
+            .frame(width: 168, height: 22)
         }
     }
 
@@ -141,7 +169,7 @@ private struct OverlayPill: View {
         case .hidden:
             return "Parrot idle"
         case .recording:
-            return "Parrot recording"
+            return "Parrot recording. Press Control and Fn or Globe to stop."
         case .transcribing:
             return "Parrot transcribing"
         }

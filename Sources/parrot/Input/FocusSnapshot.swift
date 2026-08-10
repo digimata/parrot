@@ -2,6 +2,10 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+enum FocusCaptureError: Error {
+    case secureField
+}
+
 /// Identifies the app and accessibility element that owned keyboard focus when
 /// dictation started. Parrot uses this to avoid inserting a finished transcript
 /// into a different field if the user clicks away while recording or while the
@@ -10,14 +14,19 @@ struct FocusSnapshot {
     private let applicationPID: pid_t
     private let element: AXUIElement?
 
-    static func capture() -> FocusSnapshot? {
+    static func capture() throws -> FocusSnapshot? {
         guard let application = NSWorkspace.shared.frontmostApplication else {
             return nil
         }
 
+        let rawElement = focusedElement(requiringEditable: false)
+        if let rawElement, isSecureTextElement(rawElement) {
+            throw FocusCaptureError.secureField
+        }
+
         return FocusSnapshot(
             applicationPID: application.processIdentifier,
-            element: focusedElement()
+            element: rawElement.flatMap { isSpecificEditableElement($0) ? $0 : nil }
         )
     }
 
@@ -34,11 +43,20 @@ struct FocusSnapshot {
         // the frontmost app alone is not enough because Tab or app code can move
         // focus without changing applications.
         guard let element else { return false }
-        guard let currentElement = Self.focusedElement() else { return false }
+        guard let currentElement = Self.focusedElement(requiringEditable: true) else {
+            return false
+        }
         return CFEqual(element, currentElement)
     }
 
-    private static func focusedElement() -> AXUIElement? {
+    static func currentFocusIsSecure() -> Bool {
+        guard let element = focusedElement(requiringEditable: false) else {
+            return false
+        }
+        return isSecureTextElement(element)
+    }
+
+    private static func focusedElement(requiringEditable: Bool) -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
         var value: CFTypeRef?
         let status = AXUIElementCopyAttributeValue(
@@ -56,7 +74,23 @@ struct FocusSnapshot {
         }
 
         let element = value as! AXUIElement
-        return isSpecificEditableElement(element) ? element : nil
+        if requiringEditable {
+            return isSpecificEditableElement(element) && !isSecureTextElement(element)
+                ? element
+                : nil
+        }
+        return element
+    }
+
+    private static func isSecureTextElement(_ element: AXUIElement) -> Bool {
+        var subroleValue: CFTypeRef?
+        let subroleStatus = AXUIElementCopyAttributeValue(
+            element,
+            kAXSubroleAttribute as CFString,
+            &subroleValue
+        )
+        return subroleStatus == .success
+            && (subroleValue as? String) == (kAXSecureTextFieldSubrole as String)
     }
 
     private static func isSpecificEditableElement(_ element: AXUIElement) -> Bool {

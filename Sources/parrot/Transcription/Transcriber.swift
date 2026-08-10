@@ -20,6 +20,85 @@ enum TranscriberRuntimeError: Error, CustomStringConvertible {
     }
 }
 
+private final class AsyncTimeoutResolver<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Value, Error>?
+
+    init(_ continuation: CheckedContinuation<Value, Error>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ result: Result<Value, Error>) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(with: result)
+    }
+}
+
+/// Bounds a live inference without holding the serial delivery queue forever.
+/// Cancellation is forwarded to the model task; a misbehaving model may finish
+/// later, but its late result is discarded by the one-shot resolver.
+func withAsyncTimeout<Value: Sendable>(
+    seconds: TimeInterval,
+    operation: @escaping @Sendable () async throws -> Value
+) async throws -> Value {
+    let operationTask = Task { try await operation() }
+    return try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { continuation in
+            let resolver = AsyncTimeoutResolver(continuation)
+            Task {
+                do {
+                    resolver.resolve(.success(try await operationTask.value))
+                } catch {
+                    resolver.resolve(.failure(error))
+                }
+            }
+            Task {
+                do {
+                    try await Task.sleep(for: .seconds(seconds))
+                } catch {
+                    return
+                }
+                operationTask.cancel()
+                resolver.resolve(.failure(TranscriberRuntimeError.timedOut(seconds: seconds)))
+            }
+        }
+    } onCancel: {
+        operationTask.cancel()
+    }
+}
+
+/// Serializes asynchronous transcript delivery in the exact order recordings
+/// stop. The queue is safe to append from the hotkey and safety-limit paths.
+final class SerialAsyncTaskQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tail: Task<Void, Never>?
+
+    func enqueue(_ operation: @escaping @Sendable () async -> Void) {
+        lock.lock()
+        let previous = tail
+        let task = Task {
+            if let previous { await previous.value }
+            await operation()
+        }
+        tail = task
+        lock.unlock()
+    }
+
+    func waitUntilIdle() async {
+        let current = currentTask()
+        await current?.value
+    }
+
+    private func currentTask() -> Task<Void, Never>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tail
+    }
+}
+
 /// Thread-safe bridge for the CLI's blocking subcommands. The daemon must not
 /// advertise itself as running forever while model initialization is hung.
 private final class AsyncResultBox: @unchecked Sendable {

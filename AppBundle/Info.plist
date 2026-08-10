@@ -21,6 +21,6 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Parrot records your held dictation locally for on-device transcription.</string>
+    <string>Parrot records audio between your global toggle presses for local on-device transcription.</string>
 </dict>
 </plist>

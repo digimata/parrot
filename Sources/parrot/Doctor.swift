@@ -44,7 +44,7 @@ enum DoctorReport {
             return Check(
                 name: "microphone",
                 status: .warn("not yet requested — will prompt on first recording"),
-                remediation: "run `parrot setup`, then hold Control + Fn/Globe once"
+                remediation: "run `parrot setup`, then retry the recording toggle"
             )
         case .denied, .restricted:
             return Check(

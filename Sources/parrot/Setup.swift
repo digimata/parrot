@@ -14,7 +14,7 @@ struct Setup: ParsableCommand {
         print()
         print("Parrot needs two permissions:")
         print("  1. Accessibility — to detect Control + Fn/Globe globally and inject text at the cursor.")
-        print("  2. Microphone — to record audio while you hold Control + Fn/Globe.")
+        print("  2. Microphone — to record between Control + Fn/Globe toggle presses.")
         print()
         let host = Bundle.main.bundleURL.pathExtension == "app" ? "Parrot" : "your terminal app"
         print("These attach to \(host).")

@@ -354,7 +354,7 @@ struct Install: ParsableCommand {
         while Date() < deadline {
             let job = runLaunchctl(["print", "gui/\(uid())/\(Self.label)"])
             latestLog = appendedLog(at: errorLogPath, startingAt: logOffset)
-            sawReadyLine = sawReadyLine || latestLog.contains("listening on control + fn/globe hold")
+            sawReadyLine = sawReadyLine || latestLog.contains("listening for control + fn/globe toggle")
 
             if sawReadyLine && job.status == 0 && job.stdout.contains("state = running") {
                 return nil

@@ -8,7 +8,7 @@ import WhisperKit
 struct Parrot: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "parrot",
-        abstract: "Minimal macOS dictation daemon. Hold Control + Fn/Globe, speak, release.",
+        abstract: "Minimal macOS dictation daemon. Press Control + Fn/Globe to record; press again to stop.",
         subcommands: [Run.self, Setup.self, Doctor.self, Models.self, Install.self],
         defaultSubcommand: Run.self
     )
@@ -93,156 +93,245 @@ struct Run: ParsableCommand {
         let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
         let deliveryGuards = DeliveryGuardStore()
         let interactionGenerations = InteractionGenerationStore()
-        var transcriptionTail: Task<Void, Never>?
+        let toggleState = DictationToggleState()
+        let recordingLimit = RecordingLimitScheduler()
+        let transcriptionQueue = SerialAsyncTaskQueue()
+        let maximumRecordingDuration: TimeInterval = 10 * 60
+
+        @Sendable func finishRecording(reason: RecordingStopReason) {
+            recordingLimit.cancel()
+            let result = capture.stop()
+            let samples = result.samples
+            guard let deliveryGuard = deliveryGuards.releaseCurrent() else {
+                MainActor.assumeIsolated {
+                    overlay?.hide()
+                    menuBar.setCaptureError("recording state lost · try again")
+                    NSSound.beep()
+                }
+                return
+            }
+            MainActor.assumeIsolated {
+                overlay?.show(.transcribing)
+                announceParrotState(
+                    reason == .safetyLimit
+                        ? "Parrot reached the ten-minute recording limit and is transcribing."
+                        : "Parrot stopped recording and is transcribing."
+                )
+                menuBar.setTranscribing(
+                    reason == .safetyLimit
+                        ? "10-minute limit reached · transcribing"
+                        : "transcribing…"
+                )
+            }
+            let seconds = Double(samples.count) / AudioCapture.targetSampleRate
+            let rms = computeRMS(samples)
+            FileHandle.standardError.write(Data(String(
+                format: "○ recorded %.2fs · captured %.2fs · callbacks %d · input frames %d · rms %.3f\n",
+                result.wallDuration,
+                seconds,
+                result.callbackCount,
+                result.inputFrameCount,
+                rms
+            ).utf8))
+            if reason == .safetyLimit {
+                FileHandle.standardError.write(Data(
+                    "  10-minute recording safety limit reached · transcribing automatically\n".utf8
+                ))
+            }
+            if result.configurationChanged {
+                FileHandle.standardError.write(Data(
+                    "  audio device changed during recording · please retry\n".utf8
+                ))
+                deliveryGuards.remove(deliveryGuard)
+                MainActor.assumeIsolated {
+                    overlay?.hide()
+                    menuBar.setCaptureError("audio device changed · try again")
+                    NSSound.beep()
+                }
+                return
+            }
+            if let error = result.conversionError {
+                FileHandle.standardError.write(Data(
+                    "  audio conversion failed: \(error)\n".utf8
+                ))
+                deliveryGuards.remove(deliveryGuard)
+                MainActor.assumeIsolated {
+                    overlay?.hide()
+                    menuBar.setCaptureError("audio capture failed · try again")
+                    NSSound.beep()
+                }
+                return
+            }
+            if dumpWav, !samples.isEmpty {
+                let path = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(
+                        "parrot-debug-\(getpid())-\(UUID().uuidString).wav"
+                    )
+                    .path
+                do {
+                    try WAVWriter.write(samples: samples, sampleRate: 16_000, to: path)
+                    FileHandle.standardError.write(Data("  wrote \(path)\n".utf8))
+                } catch {
+                    FileHandle.standardError.write(Data("  wav write failed: \(error)\n".utf8))
+                }
+            }
+            guard !samples.isEmpty else {
+                deliveryGuards.remove(deliveryGuard)
+                MainActor.assumeIsolated {
+                    overlay?.hide()
+                    if result.wallDuration >= 0.25 {
+                        menuBar.setCaptureError("no microphone audio · try again")
+                        NSSound.beep()
+                    } else {
+                        menuBar.setRecording(false)
+                    }
+                }
+                return
+            }
+            transcriptionQueue.enqueue {
+                let started = Date()
+                do {
+                    let text = try await withAsyncTimeout(seconds: 180) {
+                        try await transcriber.transcribe(samples)
+                    }
+                    guard !text.isEmpty else { throw TranscriberError.emptyResult }
+                    let elapsed = Date().timeIntervalSince(started)
+                    FileHandle.standardError.write(Data(
+                        String(format: "→ %.2fs · %d chars\n", elapsed, text.count).utf8
+                    ))
+                    await MainActor.run {
+                        let shouldResetUI = interactionGenerations.isLatest(
+                            deliveryGuard.uiGeneration
+                        )
+                        let delivery = TextInjector.deliver(text, deliveryGuard: deliveryGuard)
+                        switch delivery {
+                        case .injected:
+                            FileHandle.standardError.write(Data("  delivered to original cursor\n".utf8))
+                        case .copiedToClipboard:
+                            FileHandle.standardError.write(Data("  focus changed · copied transcript to clipboard\n".utf8))
+                            NSSound.beep()
+                        case .clipboardCopyFailed:
+                            FileHandle.standardError.write(Data("  focus changed · clipboard copy failed\n".utf8))
+                            NSSound.beep()
+                        case .blockedSecureField:
+                            FileHandle.standardError.write(Data(
+                                "  secure field focused · transcript discarded\n".utf8
+                            ))
+                            announceParrotState(
+                                "Parrot discarded the transcript because a secure field is focused."
+                            )
+                            NSSound.beep()
+                        }
+                        if shouldResetUI {
+                            overlay?.hide()
+                            menuBar.setRecording(false)
+                        }
+                        deliveryGuards.remove(deliveryGuard)
+                    }
+                } catch {
+                    FileHandle.standardError.write(Data("transcription failed: \(error)\n".utf8))
+                    await MainActor.run {
+                        if interactionGenerations.isLatest(deliveryGuard.uiGeneration) {
+                            overlay?.hide()
+                            menuBar.setCaptureError("transcription failed · try again")
+                        } else {
+                            announceParrotState("An earlier Parrot dictation failed to transcribe.")
+                        }
+                        // Older work must still fail visibly/audibly without
+                        // overwriting the state of a newer recording.
+                        NSSound.beep()
+                        deliveryGuards.remove(deliveryGuard)
+                    }
+                }
+            }
+        }
 
         do {
             try monitor.start { event in
                 switch event {
-                case .pressed:
-                    let uiGeneration = interactionGenerations.advance()
-                    do {
-                        try capture.start()
-                        // Start the microphone before querying Accessibility.
-                        // Some apps can make the AX lookup slow; audio should
-                        // still cover the full hotkey hold while that completes.
-                        let deliveryGuard = DeliveryGuard(
-                            originalFocus: FocusSnapshot.capture(),
-                            uiGeneration: uiGeneration
-                        )
-                        deliveryGuards.begin(deliveryGuard)
-                        FileHandle.standardError.write(Data("● recording\n".utf8))
-                        MainActor.assumeIsolated {
-                            overlay?.show(.recording)
-                            menuBar.setRecording(true)
-                        }
-                    } catch {
-                        FileHandle.standardError.write(Data("capture failed: \(error)\n".utf8))
-                        MainActor.assumeIsolated {
-                            menuBar.setCaptureError("audio capture failed · try again")
-                            NSSound.beep()
-                        }
-                    }
-                case .released:
-                    let result = capture.stop()
-                    let samples = result.samples
-                    guard let deliveryGuard = deliveryGuards.releaseCurrent() else { return }
-                    MainActor.assumeIsolated {
-                        overlay?.show(.transcribing)
-                        menuBar.setTranscribing()
-                    }
-                    let seconds = Double(samples.count) / AudioCapture.targetSampleRate
-                    let rms = computeRMS(samples)
-                    FileHandle.standardError.write(Data(String(
-                        format: "○ held %.2fs · captured %.2fs · callbacks %d · input frames %d · rms %.3f\n",
-                        result.wallDuration,
-                        seconds,
-                        result.callbackCount,
-                        result.inputFrameCount,
-                        rms
-                    ).utf8))
-                    if result.configurationChanged {
-                        FileHandle.standardError.write(Data(
-                            "  audio device changed during recording · please retry\n".utf8
-                        ))
-                        deliveryGuards.remove(deliveryGuard)
-                        MainActor.assumeIsolated {
-                            overlay?.hide()
-                            menuBar.setCaptureError("audio device changed · try again")
-                            NSSound.beep()
-                        }
-                        return
-                    }
-                    if let error = result.conversionError {
-                        FileHandle.standardError.write(Data(
-                            "  audio conversion failed: \(error)\n".utf8
-                        ))
-                        deliveryGuards.remove(deliveryGuard)
-                        MainActor.assumeIsolated {
-                            overlay?.hide()
-                            menuBar.setCaptureError("audio capture failed · try again")
-                            NSSound.beep()
-                        }
-                        return
-                    }
-                    if dumpWav, !samples.isEmpty {
-                        let path = FileManager.default.temporaryDirectory
-                            .appendingPathComponent(
-                                "parrot-debug-\(getpid())-\(UUID().uuidString).wav"
-                            )
-                            .path
+                case .toggleRequested(let observedAt):
+                    switch toggleState.toggle(observedAt: observedAt) {
+                    case .start:
+                        let uiGeneration = interactionGenerations.advance()
+                        // Accessibility lookup can block on a stalled target
+                        // app. Resolve focus before the microphone becomes hot
+                        // so recording is never invisible or unbounded.
+                        let originalFocus: FocusSnapshot?
                         do {
-                            try WAVWriter.write(samples: samples, sampleRate: 16_000, to: path)
-                            FileHandle.standardError.write(Data("  wrote \(path)\n".utf8))
-                        } catch {
-                            FileHandle.standardError.write(Data("  wav write failed: \(error)\n".utf8))
-                        }
-                    }
-                    guard !samples.isEmpty else {
-                        deliveryGuards.remove(deliveryGuard)
-                        MainActor.assumeIsolated {
-                            overlay?.hide()
-                            if result.wallDuration >= 0.25 {
-                                menuBar.setCaptureError("no microphone audio · try again")
-                                NSSound.beep()
-                            } else {
-                                menuBar.setRecording(false)
-                            }
-                        }
-                        return
-                    }
-                    let previousTranscription = transcriptionTail
-                    let transcriptionTask = Task {
-                        if let previousTranscription {
-                            await previousTranscription.value
-                        }
-                        let started = Date()
-                        do {
-                            let text = try await transcriber.transcribe(samples)
-                            guard !text.isEmpty else { throw TranscriberError.emptyResult }
-                            let elapsed = Date().timeIntervalSince(started)
-                            FileHandle.standardError.write(Data(
-                                String(format: "→ %.2fs · %d chars\n", elapsed, text.count).utf8
-                            ))
-                            await MainActor.run {
-                                let shouldResetUI = interactionGenerations.isLatest(
-                                    deliveryGuard.uiGeneration
+                            originalFocus = try FocusSnapshot.capture()
+                        } catch FocusCaptureError.secureField {
+                            toggleState.startFailed()
+                            MainActor.assumeIsolated {
+                                overlay?.hide()
+                                menuBar.setCaptureError("secure field · recording blocked")
+                                announceParrotState(
+                                    "Parrot will not record or copy text from a secure field."
                                 )
-                                let delivery = TextInjector.deliver(text, deliveryGuard: deliveryGuard)
-                                switch delivery {
-                                case .injected:
-                                    FileHandle.standardError.write(Data("  delivered to original cursor\n".utf8))
-                                case .copiedToClipboard:
-                                    FileHandle.standardError.write(Data("  focus changed · copied transcript to clipboard\n".utf8))
-                                    NSSound.beep()
-                                case .clipboardCopyFailed:
-                                    FileHandle.standardError.write(Data("  focus changed · clipboard copy failed\n".utf8))
-                                    NSSound.beep()
+                                NSSound.beep()
+                            }
+                            break
+                        } catch {
+                            toggleState.startFailed()
+                            MainActor.assumeIsolated {
+                                overlay?.hide()
+                                menuBar.setCaptureError("focus check failed · try again")
+                                announceParrotState("Parrot could not verify the focused field.")
+                                NSSound.beep()
+                            }
+                            break
+                        }
+                        do {
+                            try capture.start()
+                            let deliveryGuard = DeliveryGuard(
+                                originalFocus: originalFocus,
+                                uiGeneration: uiGeneration
+                            )
+                            deliveryGuards.begin(deliveryGuard)
+                            FileHandle.standardError.write(Data(
+                                "● recording · press control + fn/globe again to stop\n".utf8
+                            ))
+                            MainActor.assumeIsolated {
+                                overlay?.show(.recording)
+                                menuBar.setRecording(true)
+                                announceParrotState(
+                                    "Parrot is recording. Press Control and Fn or Globe again to stop."
+                                )
+                            }
+                            recordingLimit.schedule(after: maximumRecordingDuration) {
+                                // A short restart guard consumes an intended
+                                // stop press that reaches the main queue at the
+                                // exact safety-limit boundary instead of
+                                // reopening the microphone.
+                                guard toggleState.stopIfRecording(blockingRestartFor: 2) else {
+                                    return
                                 }
-                                if shouldResetUI {
-                                    overlay?.hide()
-                                    menuBar.setRecording(false)
-                                }
-                                deliveryGuards.remove(deliveryGuard)
+                                finishRecording(reason: .safetyLimit)
                             }
                         } catch {
-                            FileHandle.standardError.write(Data("transcription failed: \(error)\n".utf8))
-                            await MainActor.run {
-                                if interactionGenerations.isLatest(deliveryGuard.uiGeneration) {
-                                    overlay?.hide()
-                                    menuBar.setCaptureError("transcription failed · try again")
-                                    NSSound.beep()
-                                }
-                                deliveryGuards.remove(deliveryGuard)
+                            toggleState.startFailed()
+                            recordingLimit.cancel()
+                            FileHandle.standardError.write(Data("capture failed: \(error)\n".utf8))
+                            MainActor.assumeIsolated {
+                                overlay?.hide()
+                                menuBar.setCaptureError("audio capture failed · try again")
+                                NSSound.beep()
                             }
                         }
+                    case .stop:
+                        finishRecording(reason: .userToggle)
+                    case .ignoredDuringSafetyRearm:
+                        FileHandle.standardError.write(Data(
+                            "toggle ignored during safety-limit rearm window\n".utf8
+                        ))
                     }
-                    transcriptionTail = transcriptionTask
                 case .focusInteraction:
                     deliveryGuards.notePointerInteraction()
                 case .tapRecoveryFailed:
                     FileHandle.standardError.write(Data(
                         "fatal: global hotkey tap could not be recovered; exiting for launchd restart\n".utf8
                     ))
+                    recordingLimit.cancel()
+                    if toggleState.stopIfRecording() { _ = capture.stop() }
                     monitor.stop()
                     Darwin.exit(EXIT_FAILURE)
                 }
@@ -256,13 +345,15 @@ struct Run: ParsableCommand {
         let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sigint.setEventHandler {
             FileHandle.standardError.write(Data("\nshutting down\n".utf8))
+            recordingLimit.cancel()
+            if toggleState.stopIfRecording() { _ = capture.stop() }
             monitor.stop()
             NSApp.terminate(nil)
         }
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        FileHandle.standardError.write(Data("listening on control + fn/globe hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
+        FileHandle.standardError.write(Data("listening for control + fn/globe toggle · model: \(chosenModel.id) · ^C to quit\n".utf8))
         app.run()
     }
 }

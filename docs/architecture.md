@@ -2,14 +2,14 @@
 
 ## Product contract
 
-Parrot is a local macOS push-to-talk dictation service. Hold Control + Fn/Globe, speak, and release. Transcription runs on-device and the result is inserted only if the original editable control still owns focus. Otherwise, Parrot copies the result to the clipboard.
+Parrot is a local macOS toggle-to-record dictation service. Press Control + Fn/Globe to start, speak naturally, and press the same chord again to stop. Transcription runs on-device and the result is inserted only if the original editable control still owns focus. Otherwise, Parrot copies the result to the clipboard.
 
 The supported installation is a stable `/Applications/Parrot.app` bundle with identifier `com.digimata.parrot`. Its bundled executable is also exposed as the `parrot` CLI. A LaunchAgent can run that same executable at login. This stable app identity is required for consistent microphone and Accessibility permissions.
 
 ## Runtime shape
 
 ```text
-Control + Fn/Globe
+Control + Fn/Globe toggle
         |
         v
  HotkeyMonitor ---> AudioCapture ---> Transcriber ---> TextInjector
@@ -26,9 +26,9 @@ Control + Fn/Globe
 
 ## Input and delivery safety
 
-`HotkeyMonitor` uses a listen-only session `CGEventTap`. Dictation begins only when Control and Fn/Globe are both held. It also observes keyboard and mouse interaction while a transcript is pending. If the event tap is disabled, Parrot attempts recovery; a failed recovery exits the daemon so launchd can restart it. A hold watchdog ends any capture that reaches 120 seconds.
+`HotkeyMonitor` uses a listen-only session `CGEventTap`. Each rising edge of the Control + Fn/Globe chord emits one toggle request; releasing the keys does not stop recording. It also observes keyboard and mouse interaction while a transcript is pending. If the event tap is disabled, Parrot attempts recovery, checks the real session modifier state, suppresses only a chord that is still physically held, and preserves the current recording state. A failed recovery exits the daemon so launchd can restart it. A ten-minute safety limit prevents an accidental recording from growing without bound, and a two-second rearm window prevents a stop press at the exact limit boundary from reopening the microphone.
 
-At press time, `FocusSnapshot` records the frontmost process and a specific editable Accessibility element. At delivery time, insertion is allowed only when that exact element still owns focus and no intervening pointer or external keyboard interaction was observed. Ambiguous focus fails closed to clipboard. Clipboard fallback leaves the transcript available for paste after a successful copy. If the transcript cannot be copied, it restores every representation from the prior clipboard snapshot.
+At press time, `FocusSnapshot` records the frontmost process and a specific editable Accessibility element. A secure text field aborts before audio capture. Parrot checks again at delivery and discards the transcript if focus moved into a secure field while recording or transcribing, so the secret cannot reach the global clipboard. Otherwise, insertion is allowed only when the original element still owns focus and no intervening pointer or external keyboard interaction was observed. Other ambiguous focus fails closed to clipboard. Clipboard fallback leaves the transcript available for paste after a successful copy. If the transcript cannot be copied, it attempts to restore every representation from the prior clipboard snapshot.
 
 ## Audio lifecycle
 
@@ -42,13 +42,13 @@ Temporary WAVs are used only for Parakeet inference, model smoke tests, or an ex
 
 The built-in model registry is source-backed. Parakeet TDT 0.6B v2 is the recommended English model; WhisperKit models remain selectable. Model preparation checks available disk and uses a bounded timeout.
 
-Transcriptions are serialized in release order. Each interaction carries a generation number so an older result cannot clear a newer recording, transcribing, or error state. Empty and failed transcriptions surface an error and audible alert.
+Transcriptions are serialized in stop order and each live inference is bounded to 180 seconds so one stalled model call cannot block every later result. Each interaction carries a generation number so an older result cannot clear a newer recording, transcribing, or error state. Empty and failed transcriptions surface an error and audible alert; an older failure announces itself without overwriting newer UI state.
 
 The local model selection is stored at `~/Library/Application Support/parrot/settings.json`. Missing settings select the recommended model. Corrupt or unreadable settings fail visibly instead of silently changing models.
 
 ## UI
 
-`MenuBarController` is the persistent status surface and offers Quit. `RecordingOverlay` is a borderless, click-through `NSWindow` at the bottom of the active screen. Recording and transcribing visibility changes are immediate so fast press/release sequences cannot leave stale UI. Only the waveform uses a short transform-based smoothing transition, and Reduce Motion disables that transition.
+`MenuBarController` is the persistent status surface and offers Quit. `RecordingOverlay` is a borderless, click-through `NSWindow` at the bottom of the active screen. It remains visible for the complete toggled recording, pairs a live waveform with the stop chord, and switches immediately to transcribing. Recording, transcribing, and safety-limit transitions post high-priority accessibility announcements. Only the semantic audio meter uses a short transform-based smoothing transition; Reduce Motion removes the interpolation while retaining live level information.
 
 ## Installation and logs
 
@@ -65,7 +65,7 @@ The release path runs the release build and test suite before packaging. Control
 1. `parrot doctor --live-audio --model-ready`
 2. `parrot models smoke parakeet-tdt-0.6b-v2`
 3. A fresh LaunchAgent ready line and `state = running`
-4. A real Control + Fn/Globe dictation into an editable field
+4. A real Control + Fn/Globe start/stop dictation into an editable field
 5. A click-away test that copies to the clipboard instead of injecting into the wrong field
 
 ## Deliberate limits

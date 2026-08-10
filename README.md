@@ -1,6 +1,6 @@
 # parrot
 
-A minimal macOS dictation daemon. Push-to-talk, on-device transcription, text inserted at the cursor.
+A minimal macOS dictation daemon. Toggle recording, speak naturally, and receive on-device transcription at the cursor or on the clipboard.
 
 ## Install
 
@@ -20,10 +20,12 @@ If an existing Parrot login service is running, an update restarts it and waits 
 
 1. **Run it.** Either `parrot install --launch-at-login` (daemonized, runs forever, lives in the menu bar), or `parrot` in any terminal tab.
 2. **Click into the text field you want to dictate into** — Messages, the address bar, a Slack thread, anywhere a cursor blinks.
-3. **Hold `Control + Fn/Globe`, speak, release.** A small pill appears at the bottom of the screen while the mic is hot.
-4. **The transcript types itself into the original field** when you release. If you click into another field or switch apps before transcription finishes, Parrot copies the transcript to the clipboard instead of typing it in the wrong place. Paste it with **Command-V**.
+3. **Press `Control + Fn/Globe` once, then speak.** A persistent pill shows a live waveform while the microphone is hot.
+4. **Press the same chord again to stop.** The transcript types itself into the original field. If you started outside a text field, click elsewhere, switch apps, or type while recording, Parrot copies the transcript to the clipboard instead of typing it in the wrong place. Paste it with **Command-V**.
 
-That's it. There is no record button, no stop button, no "send" — `Control + Fn/Globe` is the whole interface.
+Parrot refuses to start while a password or other secure text field is focused. If focus moves into one during recording or transcription, it discards that transcript instead of writing it to the system clipboard.
+
+That's it. There is no record button, no stop button, no "send". `Control + Fn/Globe` toggles the microphone.
 
 > **Note:** on most modern Macs the `Fn/Globe` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," `parrot setup` will tell you how to set it to "Do Nothing."
 
