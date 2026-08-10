@@ -34,6 +34,9 @@ struct Run: ParsableCommand {
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
 
+    @Option(name: .long, help: "Parakeet loopback service URL. Defaults to http://127.0.0.1:5092.")
+    var parakeetURL: String = ParakeetConfiguration.defaultURL
+
     func run() throws {
         if !skipDoctor {
             let checks = DoctorReport.run()
@@ -61,12 +64,16 @@ struct Run: ParsableCommand {
             chosenModel = m
         }
 
-        let transcriber = WhisperKitTranscriber(model: chosenModel)
+        let transcriber = try TranscriberFactory.make(
+            model: chosenModel,
+            parakeetURL: parakeetURL,
+            parakeetAPIKey: ProcessInfo.processInfo.environment["PARROT_PARAKEET_API_KEY"]
+        )
         let warmupSemaphore = DispatchSemaphore(value: 0)
         var warmupError: Error?
         Task.detached {
             do {
-                try await transcriber.warmUp()
+                try await transcriber.prepare()
             } catch {
                 warmupError = error
             }
@@ -215,12 +222,19 @@ struct Models: ParsableCommand {
                 print("unknown model: \(id)")
                 throw ExitCode(1)
             }
+            guard m.engine == .whisperKit else {
+                print("Parakeet model files are managed by the upstream local service; Parrot does not download them.")
+                print("Start the pinned loopback service:")
+                print("docker run --rm -p 127.0.0.1:5092:5092 -e PARAKEET_WORKERS=1 ghcr.io/achetronic/parakeet:0.8.0-int8")
+                throw ExitCode(64)
+            }
+
             let t = WhisperKitTranscriber(model: m)
 
             let sem = DispatchSemaphore(value: 0)
             var capturedError: Error?
             Task.detached {
-                do { try await t.warmUp() } catch { capturedError = error }
+                do { try await t.prepare() } catch { capturedError = error }
                 sem.signal()
             }
             sem.wait()
