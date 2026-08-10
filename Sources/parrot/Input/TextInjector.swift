@@ -28,12 +28,20 @@ enum TextInjector {
         let length = chunk.count
         guard length > 0 else { return }
 
+        // NOTE: posting to `.cgSessionEventTap` collides with HotkeyMonitor's
+        // own listen-only tap, which is installed at `.headInsertEventTap` on
+        // that same `.cgSessionEventTap` location — the synthetic keystrokes
+        // get silently swallowed before reaching the focused app. Posting to
+        // `.cgAnnotatedSessionEventTap` (further down the pipeline, past that
+        // tap) delivers reliably. Confirmed empirically: cghidEventTap and
+        // cgSessionEventTap both silently no-op here; cgAnnotatedSessionEventTap
+        // lands in the focused text field every time.
         let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
         down?.keyboardSetUnicodeString(stringLength: length, unicodeString: &chunk)
-        down?.post(tap: .cgSessionEventTap)
+        down?.post(tap: .cgAnnotatedSessionEventTap)
 
         let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
         up?.keyboardSetUnicodeString(stringLength: length, unicodeString: &chunk)
-        up?.post(tap: .cgSessionEventTap)
+        up?.post(tap: .cgAnnotatedSessionEventTap)
     }
 }
