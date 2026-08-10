@@ -21,6 +21,8 @@ final class HotkeyMonitor {
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var chordState = ToggleChordState()
+    private var lastToggleObservedAt: Date?
+    private var shortcutDuplicateAvailable = false
 
     init(
         requiredFlags: CGEventFlags = [.maskControl, .maskSecondaryFn],
@@ -136,10 +138,32 @@ final class HotkeyMonitor {
             let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
             let sourceMarker = event.getIntegerValueField(.eventSourceUserData)
+            let isOwnProcess = sourcePID == Int64(getpid())
+            let isParrotInjected = sourceMarker == parrotInjectedEventMarker
+            var unicodeLength = 0
+            event.keyboardGetUnicodeString(
+                maxStringLength: 0,
+                actualStringLength: &unicodeLength,
+                unicodeString: nil
+            )
+            let canIgnoreShortcutDuplicate = shortcutDuplicateAvailable
+            if shouldConsumeShortcutDuplicateOpportunity(
+                keyCode: keyCode,
+                isOwnProcess: isOwnProcess,
+                isParrotInjected: isParrotInjected
+            ) {
+                shortcutDuplicateAvailable = false
+            }
             let shouldMarkInteraction = shouldMarkFocusInteractionForKeyDown(
                 keyCode: keyCode,
-                isOwnProcess: sourcePID == Int64(getpid()),
-                isParrotInjected: sourceMarker == parrotInjectedEventMarker
+                isOwnProcess: isOwnProcess,
+                isParrotInjected: isParrotInjected,
+                isShortcutChordActive: event.flags.contains(requiredFlags),
+                unicodeCharacterCount: unicodeLength,
+                canIgnoreShortcutDuplicate: canIgnoreShortcutDuplicate,
+                secondsSinceToggle: lastToggleObservedAt.map {
+                    observedAt.timeIntervalSince($0)
+                }
             )
             if shouldMarkInteraction {
                 onEvent?(.focusInteraction)
@@ -149,26 +173,51 @@ final class HotkeyMonitor {
         guard type == .flagsChanged else { return }
         let chordIsDown = event.flags.contains(requiredFlags)
         if chordState.update(isDown: chordIsDown) {
+            lastToggleObservedAt = observedAt
+            shortcutDuplicateAvailable = true
             onEvent?(.toggleRequested(observedAt: observedAt))
         }
     }
 }
 
-/// The Fn/Globe key can produce a keyDown in addition to modifier changes.
-/// That event belongs to Parrot's own shortcut and must not invalidate the
-/// original editor focus. All other external keyDown events remain fail-safe
-/// focus interactions while a transcript is pending.
+/// The Fn/Globe shortcut can produce a payload-free keyDown immediately after
+/// its modifier edge. Only that exact duplicate signature is excluded from
+/// focus invalidation. Real text, navigation keys, and later events remain
+/// fail-safe focus interactions while a transcript is pending.
 let fnGlobeVirtualKeyCode: Int64 = 63
+let shortcutDuplicateMaximumDelay: TimeInterval = 0.2
 // A per-process marker distinguishes Parrot's synthesized Unicode events from
 // real user input without trusting the source PID reported by Core Graphics.
 let parrotInjectedEventMarker = Int64.random(in: 1 ... Int64.max)
 
+func shouldConsumeShortcutDuplicateOpportunity(
+    keyCode: Int64,
+    isOwnProcess: Bool,
+    isParrotInjected: Bool
+) -> Bool {
+    keyCode != fnGlobeVirtualKeyCode && !isOwnProcess && !isParrotInjected
+}
+
 func shouldMarkFocusInteractionForKeyDown(
     keyCode: Int64,
     isOwnProcess: Bool,
-    isParrotInjected: Bool = false
+    isParrotInjected: Bool = false,
+    isShortcutChordActive: Bool = false,
+    unicodeCharacterCount: Int = 1,
+    canIgnoreShortcutDuplicate: Bool = true,
+    secondsSinceToggle: TimeInterval? = nil
 ) -> Bool {
-    !isOwnProcess && !isParrotInjected && keyCode != fnGlobeVirtualKeyCode
+    let isShortcutDuplicate = canIgnoreShortcutDuplicate
+        && keyCode == 0
+        && isShortcutChordActive
+        && unicodeCharacterCount == 0
+        && secondsSinceToggle.map {
+            $0 >= 0 && $0 <= shortcutDuplicateMaximumDelay
+        } == true
+    return !isOwnProcess
+        && !isParrotInjected
+        && !isShortcutDuplicate
+        && keyCode != fnGlobeVirtualKeyCode
 }
 
 private func hotkeyCallback(

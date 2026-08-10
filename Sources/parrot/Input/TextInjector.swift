@@ -33,13 +33,49 @@ enum TextInjector {
             return .blockedSecureField
         }
 
-        if deliveryGuard?.canInjectIntoOriginalFocus() == true {
+        if
+            deliveryGuard?.canInjectIntoOriginalFocus() == true,
+            deliveryGuard?.restoreCapturedSelection() == true
+        {
             let insertionText = prepareForInjection(text)
-            inject(insertionText)
-            return .injected(insertionText)
+            // Selection restoration can briefly poll Accessibility. Re-check
+            // after it in case focus moved into a password field meanwhile.
+            if currentFocusIsSecure() {
+                return .blockedSecureField
+            }
+            // Preparing a continuation may invalidate direct delivery if its
+            // expected caret cannot be restored. Re-check before recording a
+            // new expectation or posting any text.
+            if deliveryGuard?.canInjectIntoOriginalFocus() == true {
+                let selection = deliveryGuard?.editableSelectionSnapshot()
+                // The AX selection read above can block. Validate both safety
+                // predicates immediately before posting global text events.
+                if currentFocusIsSecure() {
+                    return .blockedSecureField
+                }
+                if deliveryGuard?.canInjectIntoOriginalFocus() == true {
+                    deliveryGuard?.recordExpectedCaretAfterInsertion(
+                        insertionText,
+                        replacing: selection
+                    )
+                    inject(insertionText)
+                    return .injected(insertionText)
+                }
+            }
+        }
+
+        // Focus can change while Accessibility restoration is in flight. Never
+        // let a transcript from that race reach the global clipboard.
+        if currentFocusIsSecure() {
+            return .blockedSecureField
         }
 
         let previousItems = snapshot(pasteboard)
+        // Materializing lazy pasteboard representations can block. Re-check
+        // before mutating the clipboard with the transcript.
+        if currentFocusIsSecure() {
+            return .blockedSecureField
+        }
         pasteboard.clearContents()
         if pasteboard.setString(text, forType: .string) {
             return .copiedToClipboard
@@ -131,6 +167,13 @@ final class DictationContinuationState {
             let previousGuard,
             currentGuard.sharesOriginalFocus(with: previousGuard)
         else {
+            return text
+        }
+        guard previousGuard.restoreExpectedCaret() else {
+            // Preserve the raw transcript on the clipboard when the editor
+            // cannot prove that it restored Parrot's previous caret.
+            currentGuard.notePointerInteraction()
+            clear()
             return text
         }
         return textWithNaturalDictationBoundary(

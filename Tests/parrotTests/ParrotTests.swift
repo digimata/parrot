@@ -131,6 +131,71 @@ private actor OrderedRecorder {
     ))
 }
 
+@Test func payloadFreeDuplicateAtShortcutEdgeDoesNotInvalidateEditorFocus() {
+    #expect(!shouldMarkFocusInteractionForKeyDown(
+        keyCode: 0,
+        isOwnProcess: false,
+        isShortcutChordActive: true,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 0.05
+    ))
+}
+
+@Test func realInputDuringOrAfterShortcutStillInvalidatesEditorFocus() {
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: 0,
+        isOwnProcess: false,
+        isShortcutChordActive: true,
+        unicodeCharacterCount: 1,
+        secondsSinceToggle: 0.05
+    ))
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: 123,
+        isOwnProcess: false,
+        isShortcutChordActive: true,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 0.05
+    ))
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: 0,
+        isOwnProcess: false,
+        isShortcutChordActive: true,
+        unicodeCharacterCount: 0,
+        canIgnoreShortcutDuplicate: false,
+        secondsSinceToggle: 0.05
+    ))
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: 0,
+        isOwnProcess: false,
+        isShortcutChordActive: true,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: shortcutDuplicateMaximumDelay + 0.01
+    ))
+}
+
+@Test func onlyRealExternalInputConsumesShortcutDuplicateOpportunity() {
+    #expect(shouldConsumeShortcutDuplicateOpportunity(
+        keyCode: 0,
+        isOwnProcess: false,
+        isParrotInjected: false
+    ))
+    #expect(!shouldConsumeShortcutDuplicateOpportunity(
+        keyCode: 0,
+        isOwnProcess: true,
+        isParrotInjected: false
+    ))
+    #expect(!shouldConsumeShortcutDuplicateOpportunity(
+        keyCode: 0,
+        isOwnProcess: false,
+        isParrotInjected: true
+    ))
+    #expect(!shouldConsumeShortcutDuplicateOpportunity(
+        keyCode: fnGlobeVirtualKeyCode,
+        isOwnProcess: false,
+        isParrotInjected: false
+    ))
+}
+
 @Test func everyOtherExternalKeyDownInvalidatesEditorFocus() {
     // Letters and navigation keys must remain fail-safe even if the user
     // presses them before releasing the Control + Fn/Globe chord.
@@ -210,6 +275,41 @@ private actor OrderedRecorder {
     #expect(result == .copiedToClipboard)
     #expect(pasteboard.string(forType: .string) == "standalone transcript")
     pasteboard.clearContents()
+}
+
+@Test func secureFocusRaceNeverWritesTheClipboard() {
+    let pasteboard = NSPasteboard(
+        name: NSPasteboard.Name("parrot-secure-race-tests-\(UUID().uuidString)")
+    )
+    pasteboard.clearContents()
+    #expect(pasteboard.setString("existing clipboard", forType: .string))
+    var secureChecks = 0
+
+    let result = TextInjector.deliver(
+        "sensitive transcript",
+        deliveryGuard: nil,
+        pasteboard: pasteboard,
+        currentFocusIsSecure: {
+            secureChecks += 1
+            return secureChecks > 2
+        }
+    )
+
+    #expect(result == .blockedSecureField)
+    #expect(secureChecks == 3)
+    #expect(pasteboard.string(forType: .string) == "existing clipboard")
+    pasteboard.clearContents()
+}
+
+@Test func caretAdvancesPastInsertedTextAndReplacedSelection() {
+    let replacement = CFRange(location: 4, length: 3)
+    let result = caretRangeAfterInsertion(
+        replacing: replacement,
+        insertedText: "go🙂"
+    )
+
+    #expect(result.location == 8)
+    #expect(result.length == 0)
 }
 
 @Test func dictationToggleAlternatesAndRecoversFromStartFailure() {
