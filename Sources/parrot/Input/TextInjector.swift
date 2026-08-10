@@ -7,8 +7,8 @@ import Foundation
 /// every text field on macOS; some Electron apps and secure password fields
 /// can drop characters (platform constraint).
 enum TextInjector {
-    enum DeliveryResult {
-        case injected
+    enum DeliveryResult: Equatable {
+        case injected(String)
         case copiedToClipboard
         case clipboardCopyFailed
         case blockedSecureField
@@ -20,20 +20,23 @@ enum TextInjector {
     static func deliver(
         _ text: String,
         deliveryGuard: DeliveryGuard?,
-        pasteboard: NSPasteboard = .general
+        pasteboard: NSPasteboard = .general,
+        prepareForInjection: (String) -> String = { $0 },
+        currentFocusIsSecure: () -> Bool = { FocusSnapshot.currentFocusIsSecure() }
     ) -> DeliveryResult {
-        guard !text.isEmpty else { return .injected }
+        guard !text.isEmpty else { return .injected(text) }
 
         // Re-check at delivery as well as capture start. A user can move into
         // a password field while recording or while inference is pending; in
         // that case the transcript must be discarded, never copied globally.
-        if FocusSnapshot.currentFocusIsSecure() {
+        if currentFocusIsSecure() {
             return .blockedSecureField
         }
 
         if deliveryGuard?.canInjectIntoOriginalFocus() == true {
-            inject(text)
-            return .injected
+            let insertionText = prepareForInjection(text)
+            inject(insertionText)
+            return .injected(insertionText)
         }
 
         let previousItems = snapshot(pasteboard)
@@ -75,10 +78,12 @@ enum TextInjector {
         guard length > 0 else { return }
 
         let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
+        down?.setIntegerValueField(.eventSourceUserData, value: parrotInjectedEventMarker)
         down?.keyboardSetUnicodeString(stringLength: length, unicodeString: &chunk)
         down?.post(tap: .cgSessionEventTap)
 
         let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+        up?.setIntegerValueField(.eventSourceUserData, value: parrotInjectedEventMarker)
         up?.keyboardSetUnicodeString(stringLength: length, unicodeString: &chunk)
         up?.post(tap: .cgSessionEventTap)
     }
@@ -93,5 +98,54 @@ enum TextInjector {
             }
             return copy
         }
+    }
+}
+
+/// Adds only the separator needed to continue a prior Parrot insertion. It
+/// does not otherwise rewrite model output or add spaces around punctuation.
+func textWithNaturalDictationBoundary(
+    _ text: String,
+    previousTrailingCharacter: Character?
+) -> String {
+    guard
+        let previousTrailingCharacter,
+        let firstCharacter = text.first,
+        !previousTrailingCharacter.isWhitespace,
+        !firstCharacter.isWhitespace,
+        !".,!?;:%)]}…’”".contains(firstCharacter),
+        !"([{‘“".contains(previousTrailingCharacter)
+    else {
+        return text
+    }
+    return " " + text
+}
+
+/// Remembers only Parrot's last successful direct insertion. Any real keyboard
+/// or pointer interaction clears this state before a later transcript arrives.
+final class DictationContinuationState {
+    private var previousGuard: DeliveryGuard?
+    private var previousTrailingCharacter: Character?
+
+    func textForInsertion(_ text: String, using currentGuard: DeliveryGuard) -> String {
+        guard
+            let previousGuard,
+            currentGuard.sharesOriginalFocus(with: previousGuard)
+        else {
+            return text
+        }
+        return textWithNaturalDictationBoundary(
+            text,
+            previousTrailingCharacter: previousTrailingCharacter
+        )
+    }
+
+    func recordSuccessfulInsertion(_ text: String, using deliveryGuard: DeliveryGuard) {
+        previousGuard = deliveryGuard
+        previousTrailingCharacter = text.last
+    }
+
+    func clear() {
+        previousGuard = nil
+        previousTrailingCharacter = nil
     }
 }

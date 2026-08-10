@@ -92,6 +92,7 @@ struct Run: ParsableCommand {
         }
         let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
         let deliveryGuards = DeliveryGuardStore()
+        let dictationContinuation = DictationContinuationState()
         let interactionGenerations = InteractionGenerationStore()
         let toggleState = DictationToggleState()
         let recordingLimit = RecordingLimitScheduler()
@@ -203,17 +204,33 @@ struct Run: ParsableCommand {
                         let shouldResetUI = interactionGenerations.isLatest(
                             deliveryGuard.uiGeneration
                         )
-                        let delivery = TextInjector.deliver(text, deliveryGuard: deliveryGuard)
+                        let delivery = TextInjector.deliver(
+                            text,
+                            deliveryGuard: deliveryGuard,
+                            prepareForInjection: { rawText in
+                                dictationContinuation.textForInsertion(
+                                    rawText,
+                                    using: deliveryGuard
+                                )
+                            }
+                        )
                         switch delivery {
-                        case .injected:
+                        case .injected(let insertionText):
+                            dictationContinuation.recordSuccessfulInsertion(
+                                insertionText,
+                                using: deliveryGuard
+                            )
                             FileHandle.standardError.write(Data("  delivered to original cursor\n".utf8))
                         case .copiedToClipboard:
+                            dictationContinuation.clear()
                             FileHandle.standardError.write(Data("  focus changed · copied transcript to clipboard\n".utf8))
                             NSSound.beep()
                         case .clipboardCopyFailed:
+                            dictationContinuation.clear()
                             FileHandle.standardError.write(Data("  focus changed · clipboard copy failed\n".utf8))
                             NSSound.beep()
                         case .blockedSecureField:
+                            dictationContinuation.clear()
                             FileHandle.standardError.write(Data(
                                 "  secure field focused · transcript discarded\n".utf8
                             ))
@@ -326,6 +343,7 @@ struct Run: ParsableCommand {
                     }
                 case .focusInteraction:
                     deliveryGuards.notePointerInteraction()
+                    dictationContinuation.clear()
                 case .tapRecoveryFailed:
                     FileHandle.standardError.write(Data(
                         "fatal: global hotkey tap could not be recovered; exiting for launchd restart\n".utf8

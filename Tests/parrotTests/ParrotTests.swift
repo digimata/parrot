@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import parrot
@@ -108,6 +109,107 @@ private actor OrderedRecorder {
 
     #expect(firstPress)
     #expect(nextPress)
+}
+
+@Test func tapRecoveryInvalidatesUnobservableInput() {
+    var invalidated = false
+    let monitor = HotkeyMonitor { event in
+        if case .focusInteraction = event {
+            invalidated = true
+        }
+    }
+
+    monitor.reenableAfterSystemDisable()
+
+    #expect(invalidated)
+}
+
+@Test func fnGlobeKeyDownDoesNotInvalidateEditorFocus() {
+    #expect(!shouldMarkFocusInteractionForKeyDown(
+        keyCode: fnGlobeVirtualKeyCode,
+        isOwnProcess: false
+    ))
+}
+
+@Test func everyOtherExternalKeyDownInvalidatesEditorFocus() {
+    // Letters and navigation keys must remain fail-safe even if the user
+    // presses them before releasing the Control + Fn/Globe chord.
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: 0,
+        isOwnProcess: false
+    ))
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: 123,
+        isOwnProcess: false
+    ))
+}
+
+@Test func injectedKeyDownDoesNotInvalidateEditorFocus() {
+    #expect(!shouldMarkFocusInteractionForKeyDown(
+        keyCode: 0,
+        isOwnProcess: true
+    ))
+    #expect(!shouldMarkFocusInteractionForKeyDown(
+        keyCode: 0,
+        isOwnProcess: false,
+        isParrotInjected: true
+    ))
+}
+
+@Test func consecutiveDictationGetsOnlyTheNeededBoundary() {
+    #expect(textWithNaturalDictationBoundary(
+        "What do you mean?",
+        previousTrailingCharacter: "."
+    ) == " What do you mean?")
+    #expect(textWithNaturalDictationBoundary(
+        "continues here",
+        previousTrailingCharacter: "d"
+    ) == " continues here")
+    #expect(textWithNaturalDictationBoundary(
+        "already spaced",
+        previousTrailingCharacter: " "
+    ) == "already spaced")
+    #expect(textWithNaturalDictationBoundary(
+        " world",
+        previousTrailingCharacter: "."
+    ) == " world")
+    #expect(textWithNaturalDictationBoundary(
+        ", then this",
+        previousTrailingCharacter: "d"
+    ) == ", then this")
+    #expect(textWithNaturalDictationBoundary(
+        "inside",
+        previousTrailingCharacter: "("
+    ) == "inside")
+    #expect(textWithNaturalDictationBoundary(
+        "inside smart quotes",
+        previousTrailingCharacter: "“"
+    ) == "inside smart quotes")
+    #expect(textWithNaturalDictationBoundary(
+        "”",
+        previousTrailingCharacter: "d"
+    ) == "”")
+    #expect(textWithNaturalDictationBoundary(
+        "first text",
+        previousTrailingCharacter: nil
+    ) == "first text")
+}
+
+@Test func clipboardFallbackKeepsTheRawTranscript() {
+    let pasteboard = NSPasteboard(
+        name: NSPasteboard.Name("parrot-tests-\(UUID().uuidString)")
+    )
+    let result = TextInjector.deliver(
+        "standalone transcript",
+        deliveryGuard: nil,
+        pasteboard: pasteboard,
+        prepareForInjection: { " " + $0 },
+        currentFocusIsSecure: { false }
+    )
+
+    #expect(result == .copiedToClipboard)
+    #expect(pasteboard.string(forType: .string) == "standalone transcript")
+    pasteboard.clearContents()
 }
 
 @Test func dictationToggleAlternatesAndRecoversFromStartFailure() {

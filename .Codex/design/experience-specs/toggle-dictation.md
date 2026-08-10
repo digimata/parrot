@@ -22,7 +22,7 @@ Recording state is unmistakable, and stopping is effortless.
 
 - **Signature moment:** The waveform responds directly to the speaker's voice while the overlay remains present across applications.
 - **Stable task moments:** Hotkey feedback, recording visibility, stop instruction, focus-safe delivery, and errors are immediate and predictable.
-- **Peak moment:** The transcript appears at the original cursor or is preserved on the clipboard.
+- **Peak moment:** The transcript appears at the original cursor or is preserved on the clipboard. Repeated dictations into one untouched field read as one naturally spaced passage.
 - **End state and next action:** The overlay disappears after delivery; clipboard fallback is paired with an audible alert and is ready for Command-V.
 - **Effects that may be removed without harming the experience:** All entry, exit, icon-swap, and text-swap animation. Only audio-reactive waveform motion is essential.
 
@@ -57,6 +57,7 @@ The click-through overlay remains bottom-center on the display under the pointer
 | Toggle recording | Global Control + Fn/Globe chord | Start or stop capture without holding keys | Overlay and menu state change immediately | Audio is captured until stopped | Press chord again; ten-minute safety stop |
 | Speak | Microphone | Create transcript | Waveform reacts to level | Samples remain local until transcription | Stop recording |
 | Change focus or type elsewhere | Pointer or keyboard | Continue working while speaking | Recording continues | Delivery becomes clipboard-only | Paste with Command-V |
+| Repeat dictation in the same untouched field | Global chord and microphone | Add another thought without reaching for the keyboard | Recording and waveform restart normally | One boundary space is added only when the adjacent transcript text needs it | Any click or real keypress resets continuation |
 | Quit | Menu or SIGINT | Stop Parrot | Daemon exits | Active capture is discarded | Relaunch Parrot |
 
 ## 7. Motion Choreography
@@ -135,14 +136,17 @@ The click-through overlay remains bottom-center on the display under the pointer
 8. PASS if a successful clipboard fallback leaves the transcript available for Command-V and a failed copy restores the prior clipboard.
 9. PASS if capture is bounded by a visible ten-minute safety stop.
 10. PASS if app identity, live audio, model readiness, private logs, and LaunchAgent readiness remain verified.
+11. PASS if two consecutive dictations into one unchanged editable field produce a natural boundary such as `Okay. What`, without changing the first transcript or doubling existing whitespace.
+12. PASS if any real keypress, click, focus drift, secure field, or clipboard fallback clears continuation and leaves clipboard text equal to the raw standalone transcript.
+13. PASS if event-tap disablement preserves active recording but invalidates direct insertion and continuation because input during the blind interval cannot be proven safe.
 
 ## 15. Verification Plan
 
-- **Routes or stories:** Idle to recording to transcribing to cursor delivery; clipboard fallback; capture error; rapid toggle; safety limit.
+- **Routes or stories:** Idle to recording to transcribing to cursor delivery; two consecutive cursor deliveries in one field; clipboard fallback; capture error; rapid toggle; safety limit.
 - **Viewports:** Active macOS display and a secondary display when available.
 - **Input modes:** Physical Control + Fn/Globe, pointer focus change, keyboard interaction, and menu Quit.
-- **Network and failure scenarios:** Offline cached model; input-route change; zero-frame capture; event-tap recovery.
-- **Automated checks:** Release build, Swift tests for chord/toggle state, parse, plist, workflow YAML, and staged diff checks.
+- **Network and failure scenarios:** Offline cached model; input-route change; zero-frame capture; event-tap recovery with forced clipboard fallback.
+- **Automated checks:** Release build, Swift tests for chord/toggle state, natural transcript boundaries, raw clipboard fallback, parse, plist, workflow YAML, and staged diff checks.
 - **Rendered QA evidence:** Persistent overlay, voice-reactive waveform, instant state swap, and reduced-motion behavior observed in the running signed app.
 - **Responsive QA loop:** N/A - macOS utility has no web viewport or mobile surface; multi-display positioning is the applicable adaptation.
 - **Final verifier:** Signed app doctor with live audio and model readiness, Parakeet smoke test, running LaunchAgent ready log, Boris, Fresh Eyes, and motion approval.

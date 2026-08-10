@@ -49,6 +49,12 @@ struct FocusSnapshot {
         return CFEqual(element, currentElement)
     }
 
+    func identifiesSameEditableElement(as other: FocusSnapshot) -> Bool {
+        guard applicationPID == other.applicationPID else { return false }
+        guard let element, let otherElement = other.element else { return false }
+        return CFEqual(element, otherElement)
+    }
+
     static func currentFocusIsSecure() -> Bool {
         guard let element = focusedElement(requiringEditable: false) else {
             return false
@@ -125,6 +131,11 @@ final class DeliveryGuard {
 
     func canInjectIntoOriginalFocus() -> Bool {
         !observedPointerInteraction && originalFocus?.stillOwnsFocus() == true
+    }
+
+    func sharesOriginalFocus(with other: DeliveryGuard) -> Bool {
+        guard let originalFocus, let otherFocus = other.originalFocus else { return false }
+        return originalFocus.identifiesSameEditableElement(as: otherFocus)
     }
 }
 

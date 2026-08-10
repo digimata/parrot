@@ -24,10 +24,12 @@ final class HotkeyMonitor {
 
     init(
         requiredFlags: CGEventFlags = [.maskControl, .maskSecondaryFn],
-        debug: Bool = false
+        debug: Bool = false,
+        onEvent: ((Event) -> Void)? = nil
     ) {
         self.requiredFlags = requiredFlags
         self.debug = debug
+        self.onEvent = onEvent
     }
 
     func start(onEvent: @escaping (Event) -> Void) throws {
@@ -91,7 +93,10 @@ final class HotkeyMonitor {
         onEvent = nil
     }
 
-    fileprivate func reenableAfterSystemDisable() {
+    func reenableAfterSystemDisable() {
+        // Input is unobservable while the tap is disabled. Fail closed even
+        // when recovery succeeds because a click or caret move may be missing.
+        onEvent?(.focusInteraction)
         guard let tap else { return }
         CGEvent.tapEnable(tap: tap, enable: true)
         guard CGEvent.tapIsEnabled(tap: tap) else {
@@ -129,7 +134,14 @@ final class HotkeyMonitor {
         }
         if type == .keyDown {
             let sourcePID = event.getIntegerValueField(.eventSourceUnixProcessID)
-            if sourcePID != Int64(getpid()) {
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            let sourceMarker = event.getIntegerValueField(.eventSourceUserData)
+            let shouldMarkInteraction = shouldMarkFocusInteractionForKeyDown(
+                keyCode: keyCode,
+                isOwnProcess: sourcePID == Int64(getpid()),
+                isParrotInjected: sourceMarker == parrotInjectedEventMarker
+            )
+            if shouldMarkInteraction {
                 onEvent?(.focusInteraction)
             }
             return
@@ -140,6 +152,23 @@ final class HotkeyMonitor {
             onEvent?(.toggleRequested(observedAt: observedAt))
         }
     }
+}
+
+/// The Fn/Globe key can produce a keyDown in addition to modifier changes.
+/// That event belongs to Parrot's own shortcut and must not invalidate the
+/// original editor focus. All other external keyDown events remain fail-safe
+/// focus interactions while a transcript is pending.
+let fnGlobeVirtualKeyCode: Int64 = 63
+// A per-process marker distinguishes Parrot's synthesized Unicode events from
+// real user input without trusting the source PID reported by Core Graphics.
+let parrotInjectedEventMarker = Int64.random(in: 1 ... Int64.max)
+
+func shouldMarkFocusInteractionForKeyDown(
+    keyCode: Int64,
+    isOwnProcess: Bool,
+    isParrotInjected: Bool = false
+) -> Bool {
+    !isOwnProcess && !isParrotInjected && keyCode != fnGlobeVirtualKeyCode
 }
 
 private func hotkeyCallback(
