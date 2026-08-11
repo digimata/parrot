@@ -4,7 +4,8 @@
 #
 # Fetches the latest arm64 macOS app from GitHub Releases, verifies its
 # published SHA-256 checksum, installs the stable signed app identity in
-# /Applications, and links its CLI into /usr/local/bin.
+# /Applications. When /usr/local/bin already exists and is writable, it also
+# adds an optional CLI shortcut there without requesting administrator access.
 #
 # Apple Silicon only. Parrot's local inference engines require an M-series Mac.
 
@@ -113,16 +114,7 @@ fi
 # attribute before installing this verified, ad-hoc-signed local app.
 xattr -dr com.apple.quarantine "$APP_SOURCE" 2>/dev/null || true
 
-# 5. install the app and expose its bundled executable on PATH
-SUDO=""
-if [ ! -w "$INSTALL_DIR" ]; then
-    if [ ! -d "$INSTALL_DIR" ]; then
-        dim "→ creating ${INSTALL_DIR} (sudo)..."
-        sudo mkdir -p "$INSTALL_DIR"
-    fi
-    SUDO="sudo"
-fi
-
+# 5. install the app
 APP_DIR="/Applications/Parrot.app"
 APP_STAGE="/Applications/.Parrot.app.install.$$"
 APP_BACKUP="/Applications/.Parrot.app.backup.$$"
@@ -167,8 +159,14 @@ if ! $APP_SUDO codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
     exit 1
 fi
 
-dim "→ linking ${INSTALL_DIR}/${BIN_NAME} to the app executable..."
-$SUDO ln -sf "$APP_DIR/Contents/MacOS/parrot" "${INSTALL_DIR}/${BIN_NAME}"
+CLI_LINKED=false
+if [ -d "$INSTALL_DIR" ] && [ -w "$INSTALL_DIR" ]; then
+    dim "→ adding optional CLI shortcut at ${INSTALL_DIR}/${BIN_NAME}..."
+    ln -sf "$APP_DIR/Contents/MacOS/parrot" "${INSTALL_DIR}/${BIN_NAME}"
+    CLI_LINKED=true
+else
+    dim "→ skipping optional CLI shortcut; ${INSTALL_DIR} is not user-writable"
+fi
 
 # Updating the files under a long-running launchd job does not update its
 # already-mapped process. If Parrot was active, require the newly installed
@@ -186,7 +184,6 @@ if [ "$AGENT_WAS_REGISTERED" = true ]; then
                 red "the update failed and the prior app could not be restored"
                 exit 1
             fi
-            $SUDO ln -sf "$APP_DIR/Contents/MacOS/parrot" "${INSTALL_DIR}/${BIN_NAME}"
             # Use the new install command's stronger readiness verifier while
             # pointing the restored plist back at the prior app executable.
             if ! "$APP_EXECUTABLE" install --launch-at-login; then
@@ -227,5 +224,8 @@ fi
 
 green "✓ parrot ${TAG} installed at ${APP_DIR}"
 green "✓ permissions, local model, microphone, and login service verified"
+if [ "$CLI_LINKED" = false ]; then
+    dim "  optional CLI: ${APP_DIR}/Contents/MacOS/parrot"
+fi
 echo
 echo "Parrot is ready. Click a text field and press Control + Fn/Globe to dictate."

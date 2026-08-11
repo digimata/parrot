@@ -9,7 +9,7 @@ struct Parrot: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "parrot",
         abstract: "Minimal macOS dictation daemon. Press Control + Fn/Globe to record; press again to stop.",
-        version: "0.1.0",
+        version: "0.1.1",
         subcommands: [Run.self, Setup.self, Doctor.self, Models.self, Install.self],
         defaultSubcommand: Run.self
     )
