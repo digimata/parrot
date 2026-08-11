@@ -1,55 +1,84 @@
-# parrot
+# Parrot
 
-A minimal macOS dictation daemon. Push-to-talk, on-device transcription, text inserted at the cursor.
+Fast, private voice-to-text for Apple Silicon Macs. Press one shortcut, speak naturally, and get clean text ready to paste.
+
+Audio and transcription stay on your Mac. There is no account, subscription, or cloud API.
 
 ## Install
 
-```sh
-curl -fsSL https://digimata.github.io/parrot/install.sh | sh
-parrot setup                       # grants mic + accessibility, downloads the model
-parrot install --launch-at-login   # optional — runs in the background on login
-```
-
-**Requires:** macOS 14+ on Apple Silicon (M1 or newer). Transcription runs on the Apple Neural Engine via CoreML — so the installer refuses to run on Intel.
-
-The installer drops the binary in `/usr/local/bin/parrot`. Builds are unsigned for now, so the installer strips the quarantine xattr — once you've inspected the script you'll see exactly what it does.
-
-## How to use
-
-1. **Run it.** Either `parrot install --launch-at-login` (daemonized, runs forever, lives in the menu bar), or `parrot` in any terminal tab.
-2. **Click into the text field you want to dictate into** — Messages, the address bar, a Slack thread, anywhere a cursor blinks.
-3. **Hold the `fn` key, speak, release.** A small pill appears at the bottom of the screen while the mic is hot.
-4. **The transcript types itself in at the cursor** when you release. Usually within 200-300ms.
-
-That's it. There is no record button, no stop button, no "send" — `fn` is the whole interface.
-
-> **Note:** on most modern Macs the `fn` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," `parrot setup` will tell you how to flip it back to plain `fn`.
-
-## CLI
+Open Terminal, paste this entire line, and press Return:
 
 ```sh
-parrot                                 # run in the foreground (^C to quit)
-parrot setup                           # one-time setup: permissions + model download
-parrot install --launch-at-login       # register a LaunchAgent (background daemon)
-parrot install --uninstall             # remove the LaunchAgent
-parrot doctor                          # check permissions + fn key setting
-parrot models list                     # list available models
-parrot models download <id>            # pre-download a model
-parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
-parrot --hotkey right-option           # change the push-to-talk key
-parrot --no-overlay                    # disable the bottom-of-screen pill
+curl -fsSL https://github.com/willmather95/parrot/releases/latest/download/install.sh | bash
 ```
 
-## Stack
+The installer walks you through the two macOS permission prompts, downloads the local speech model, verifies your microphone, and starts Parrot automatically whenever you log in.
 
-- **Swift** — single SPM executable target
-- **WhisperKit** — Whisper inference via CoreML, ANE-accelerated
-- **AVAudioEngine** — mic capture
-- **CGEventTap** — global hotkey
-- **CGEvent** — text injection at cursor
-- **NSWindow** (borderless, click-through) — recording-indicator pill
+At login, a crash-aware supervisor opens Parrot as the signed app through macOS Launch Services. That keeps its menu-bar bird and bottom-of-screen listening pill attached to the active desktop instead of stranding them on the desktop that happened to exist during startup. A deliberate menu-bar Quit stays quit; a crash or fatal hotkey failure is restarted automatically.
 
-See [docs/architecture.md](docs/architecture.md) for design notes.
+It also sets the Globe key to "Do Nothing" so macOS does not intercept Parrot's shortcut. You can change that later in System Settings > Keyboard.
+
+**Requires:** macOS 14 or newer on an Apple Silicon Mac (M1 or newer). The first install downloads the on-device speech model and can take a few minutes.
+
+## Use it
+
+**Best workflow, especially in Codex:** Use Parrot like a voice clipboard. Press once and let go, speak, press once again and let go, then paste the transcript.
+
+1. Click the text field where you want your words to appear.
+2. Press `Control + Fn/Globe` once, then release both keys. You do not need to hold them while you talk.
+3. Speak naturally. You can dictate a quick thought or talk for a minute. The pill at the bottom of the screen confirms that Parrot is listening.
+4. When you are finished, press `Control + Fn/Globe` once again, then release both keys.
+5. Parrot transcribes your recording locally and quickly. In Codex, press `Command-V` to paste the transcript.
+
+In some apps, Parrot inserts the transcript automatically. If the text already appears, you are done. If it does not, Parrot has copied it to your clipboard, so press `Command-V`. This clipboard workflow is the most dependable way to use Parrot across different apps.
+
+Codex desktop currently does not expose its composer as a focused Accessibility control. Parrot therefore uses the safe clipboard fallback there instead of guessing which opaque control owns focus. Auto-insert continues to work in apps that expose a specific editable field.
+
+Parrot will not start in a password or other secure field. If focus moves into one while Parrot is working, it discards that transcript instead of putting it on the clipboard.
+
+## Troubleshooting
+
+Run one check that verifies permissions, the real microphone path, and the selected local model:
+
+```sh
+parrot doctor --live-audio --model-ready
+```
+
+If macOS permissions were changed after installation, run:
+
+```sh
+parrot setup
+parrot install --launch-at-login
+```
+
+After a restart, the idle bird should appear in the menu bar. During recording, macOS shows its microphone privacy indicator and Parrot shows the listening pill near the bottom of the active display. If either Parrot surface is missing, reinstalling the login item with the command above reattaches the app to the current GUI session.
+
+## Useful commands
+
+```sh
+parrot doctor                          # check permissions and shortcut settings
+parrot models list                     # list available speech models
+parrot models download <id>            # download a model before selecting it
+parrot --model whisper-large-v3-turbo  # use the larger multilingual model
+parrot install --uninstall             # stop launching Parrot at login
+```
+
+## What this fork adds
+
+This is a customized fork of [Digimata's original Parrot project](https://github.com/digimata/parrot). Full credit to Digimata for the foundation.
+
+The fork adds:
+
+- A Parakeet model tuned for fast English dictation
+- Safer cursor insertion that verifies the original field before typing
+- Clipboard fallback when focus changes
+- Protection for secure and unobservable fields
+- Runtime recovery for microphone route changes and repeated dictation
+- Clear clipboard fallback diagnostics when an app does not expose a focused Accessibility control
+- Launch Services startup so the menu-bar item and overlay follow the active desktop after login
+- A checksum-verified app installer with launch-at-login setup and rollback
+
+The stable `com.digimata.parrot` app identity is intentionally preserved so macOS can retain existing Accessibility and microphone permissions across updates.
 
 ## Build from source
 
@@ -57,3 +86,15 @@ See [docs/architecture.md](docs/architecture.md) for design notes.
 swift build -c release
 .build/release/parrot --help
 ```
+
+See [docs/architecture.md](docs/architecture.md) for the design and safety model.
+
+## How the release is verified
+
+The installer downloads the latest GitHub release, verifies its published SHA-256 checksum, checks the app signature and stable identity, and installs `/Applications/Parrot.app`. Updates are staged transactionally. If a running replacement cannot become ready, the installer restores the prior app and service.
+
+This is an open-source beta. The release is ad hoc signed and is not Apple-notarized. The installer removes quarantine only after the checksum, archive paths, signature, and app identity pass verification. You can [read the installer](scripts/install.sh) before running it.
+
+## License
+
+Parrot remains available under the original project's [MIT License](LICENSE).

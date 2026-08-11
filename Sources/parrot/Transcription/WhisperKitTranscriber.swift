@@ -38,11 +38,12 @@ actor WhisperKitTranscriber: Transcriber {
     /// (silence), <|nospeech|>, etc.) and collapse whitespace. When the model
     /// hears silence it emits these literally; we don't want to paste them.
     static func sanitize(_ text: String) -> String {
+        let nonSpeech = #"(?:blank[_ ]audio|music|applause|silence|background noise|noise|inaudible|unintelligible)"#
         let patterns = [
-            #"\[[^\]]*\]"#,        // [BLANK_AUDIO], [MUSIC], [Applause]
-            #"\([^)]*\)"#,          // (silence), (music playing)
-            #"<\|[^|]*\|>"#,        // <|nospeech|>, <|endoftext|>
-            #"\*[^*]*\*"#,          // *background noise*
+            #"(?i)\[\s*"# + nonSpeech + #"\s*\]"#,
+            #"(?i)\(\s*"# + nonSpeech + #"\s*\)"#,
+            #"(?i)\*\s*"# + nonSpeech + #"\s*\*"#,
+            #"<\|[^|]*\|>"#, // Whisper control tokens such as <|nospeech|>.
         ]
         var out = text
         for p in patterns {
@@ -56,4 +57,5 @@ actor WhisperKitTranscriber: Transcriber {
 enum TranscriberError: Error {
     case missingEngineID
     case notLoaded
+    case emptyResult
 }

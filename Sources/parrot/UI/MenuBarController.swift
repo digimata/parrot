@@ -9,15 +9,24 @@ final class MenuBarController {
     private let modelLabel: NSMenuItem
     private let stateLabel: NSMenuItem
     private let modelID: String
+    private let onQuit: @MainActor () -> Void
 
-    init(modelID: String) {
+    init(
+        modelID: String,
+        onQuit: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }
+    ) {
         self.modelID = modelID
+        self.onQuit = onQuit
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        stateLabel = NSMenuItem(title: "idle · hold fn to dictate", action: nil, keyEquivalent: "")
+        stateLabel = NSMenuItem(
+            title: "idle · press control + fn/globe to record",
+            action: nil,
+            keyEquivalent: ""
+        )
         stateLabel.isEnabled = false
         menu.addItem(stateLabel)
 
@@ -39,19 +48,45 @@ final class MenuBarController {
         configureButton(recording: false)
     }
 
-    func setRecording(_ recording: Bool) {
-        stateLabel.title = recording ? "● recording" : "idle · hold fn to dictate"
+    var isReady: Bool {
+        guard let window = statusItem.button?.window else { return false }
+        return window.windowNumber > 0 && window.screen != nil
     }
 
-    func setTranscribing() {
-        stateLabel.title = "transcribing…"
+    func setRecording(_ recording: Bool) {
+        stateLabel.title = recording
+            ? "● recording · press control + fn/globe to stop"
+            : "idle · press control + fn/globe to record"
+        configureButton(recording: recording)
+    }
+
+    func setTranscribing(_ message: String = "transcribing…") {
+        stateLabel.title = message
+        configureButton(recording: false)
+    }
+
+    func setCaptureError(_ message: String) {
+        stateLabel.title = message
+        guard let button = statusItem.button else { return }
+        let image = NSImage(
+            systemSymbolName: "mic.slash",
+            accessibilityDescription: "Parrot microphone unavailable"
+        )
+        image?.isTemplate = true
+        button.image = image
+        button.toolTip = message
     }
 
     private func configureButton(recording: Bool) {
         guard let button = statusItem.button else { return }
-        let image = Self.birdImage()
+        let image = recording
+            ? NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Parrot recording")
+            : Self.birdImage()
         image?.isTemplate = true
         button.image = image
+        button.toolTip = recording
+            ? "Parrot is recording · press Control + Fn/Globe to stop"
+            : "Parrot dictation · press Control + Fn/Globe to record"
     }
 
     // Inlined Lucide bird SVG. Keeping it in source means the executable has
@@ -79,6 +114,6 @@ final class MenuBarController {
     }
 
     @objc private func quitClicked() {
-        NSApp.terminate(nil)
+        onQuit()
     }
 }

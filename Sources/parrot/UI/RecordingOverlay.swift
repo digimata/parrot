@@ -15,33 +15,25 @@ final class RecordingOverlay {
     private let model = OverlayModel()
 
     func show(_ state: State) {
-        ensureWindow()
         if state == .recording {
             model.resetLevels()
         }
+        // Seed the hosting view with the visible state. A login-launched app can
+        // otherwise create its first SwiftUI tree from `.hidden` on a Space the
+        // user is no longer viewing and never composite the first update there.
+        model.state = state
+        ensureWindow()
         guard let window else { return }
-        let needsAppear = !window.isVisible
-        if needsAppear {
-            positionAtBottomCenter(window)
+        positionAtBottomCenter(window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        if !window.isVisible {
             window.orderFrontRegardless()
-            // Defer the state change so SwiftUI lays out in the .hidden style
-            // first, then animates to the visible style on the next runloop tick.
-            DispatchQueue.main.async { [model] in
-                model.state = state
-            }
-        } else {
-            model.state = state
         }
     }
 
     func hide() {
         model.state = .hidden
-        // Let the SwiftUI scale+fade animation play out before yanking the
-        // window — otherwise it just pops away.
-        let window = self.window
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-            window?.orderOut(nil)
-        }
+        window?.orderOut(nil)
     }
 
     /// Push a new audio level (0…~1). Safe to call from any thread.
@@ -54,7 +46,7 @@ final class RecordingOverlay {
     private func ensureWindow() {
         if window != nil { return }
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 96, height: 44),
+            contentRect: NSRect(x: 0, y: 0, width: 196, height: 44),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -65,7 +57,7 @@ final class RecordingOverlay {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.ignoresMouseEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        panel.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
 
         let host = NSHostingView(rootView: OverlayPill(model: model))
@@ -77,13 +69,34 @@ final class RecordingOverlay {
     }
 
     private func positionAtBottomCenter(_ window: NSPanel) {
-        guard let screen = NSScreen.main else { return }
+        // Accessory apps do not reliably have an `NSScreen.main`. Prefer the
+        // display under the pointer so the indicator follows the app being
+        // dictated into, then fall back to the main/first display.
+        let pointer = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(pointer) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen else { return }
         let frame = window.frame
         let visible = screen.visibleFrame
         let x = visible.midX - frame.width / 2
         let y = visible.minY + 32
         window.setFrameOrigin(NSPoint(x: x, y: y))
     }
+}
+
+@MainActor
+func announceParrotState(_ text: String) {
+    guard !text.isEmpty else { return }
+    let userInfo: [NSAccessibility.NotificationUserInfoKey: Any] = [
+        .announcement: text,
+        .priority: NSAccessibilityPriorityLevel.high.rawValue,
+    ]
+    NSAccessibility.post(
+        element: NSApp as Any,
+        notification: .announcementRequested,
+        userInfo: userInfo
+    )
 }
 
 /// Observable state for the SwiftUI pill.
@@ -124,24 +137,45 @@ private struct OverlayPill: View {
                 Capsule()
                     .fill(Color(red: 16/255, green: 18/255, blue: 18/255))
             )
-            .scaleEffect(model.state == .hidden ? 0 : 1)
-            .animation(
-                .timingCurve(0.16, 1, 0.3, 1, duration: 0.3),
-                value: model.state
-            )
+            .accessibilityLabel(accessibilityLabel)
     }
 
     @ViewBuilder
     private var content: some View {
         switch model.state {
-        case .hidden, .recording:
-            Waveform(levels: model.levels)
-                .frame(width: 54, height: 22)
+        case .hidden:
+            EmptyView()
+        case .recording:
+            HStack(spacing: 10) {
+                Waveform(levels: model.levels)
+                    .frame(width: 54, height: 22)
+                Text("⌃ + 🌐 to stop")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+            }
+            .frame(width: 168, height: 22)
         case .transcribing:
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.8)
-                .frame(width: 54, height: 22)
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.8)
+                Text("Transcribing…")
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.82))
+            }
+            .frame(width: 168, height: 22)
+        }
+    }
+
+    private var accessibilityLabel: String {
+        switch model.state {
+        case .hidden:
+            return "Parrot idle"
+        case .recording:
+            return "Parrot recording. Press Control and Fn or Globe to stop."
+        case .transcribing:
+            return "Parrot transcribing"
         }
     }
 }
@@ -149,6 +183,7 @@ private struct OverlayPill: View {
 private struct Waveform: View {
     let levels: [Float]
     private let color = Color(red: 181/255.0, green: 209/255.0, blue: 255/255.0)
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(alignment: .center, spacing: 4) {
@@ -158,7 +193,7 @@ private struct Waveform: View {
                     .frame(width: 2.5)
                     .frame(maxHeight: .infinity)
                     .scaleEffect(y: max(0.10, CGFloat(level)), anchor: .center)
-                    .animation(.easeOut(duration: 0.09), value: level)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.09), value: level)
             }
         }
     }

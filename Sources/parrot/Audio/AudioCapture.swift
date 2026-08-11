@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 
 /// Captures microphone audio while recording is active and returns a 16 kHz
@@ -8,13 +9,33 @@ final class AudioCapture {
     enum CaptureError: Error {
         case engineStartFailed(Error)
         case converterCreationFailed
+        case inputUnavailable(sampleRate: Double, channels: AVAudioChannelCount)
+    }
+
+    struct CaptureResult {
+        let samples: [Float]
+        let configurationChanged: Bool
+        let conversionError: Error?
+        let callbackCount: Int
+        let inputFrameCount: Int
+        let wallDuration: TimeInterval
     }
 
     static let targetSampleRate: Double = 16_000
 
-    private let engine = AVAudioEngine()
+    // Audio routes can change while this login daemon remains alive for days.
+    // A fresh engine per recording avoids retaining an input node that belongs
+    // to a stale Core Audio aggregate device after sleep, docking, or plugging
+    // in headphones/a microphone.
+    private var engine: AVAudioEngine?
     private var converter: AVAudioConverter?
+    private var configurationObserver: NSObjectProtocol?
     private var samples: [Float] = []
+    private var configurationChanged = false
+    private var conversionError: Error?
+    private var callbackCount = 0
+    private var inputFrameCount = 0
+    private var startedAt: TimeInterval?
     private var isRecording = false
     private let lock = NSLock()
 
@@ -26,8 +47,15 @@ final class AudioCapture {
     func start() throws {
         guard !isRecording else { return }
 
+        let engine = AVAudioEngine()
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw CaptureError.inputUnavailable(
+                sampleRate: inputFormat.sampleRate,
+                channels: inputFormat.channelCount
+            )
+        }
 
         let targetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -43,7 +71,23 @@ final class AudioCapture {
 
         lock.lock()
         samples.removeAll(keepingCapacity: true)
+        configurationChanged = false
+        conversionError = nil
+        callbackCount = 0
+        inputFrameCount = 0
         lock.unlock()
+
+        let configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            // Apple warns against tearing the engine down inside this callback.
+            // Record the invalidation and let stop() perform synchronous cleanup.
+            self?.markConfigurationChanged()
+        }
+        self.engine = engine
+        self.configurationObserver = configurationObserver
 
         // Tap with input format; convert inside the callback.
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
@@ -55,25 +99,66 @@ final class AudioCapture {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+            self.engine = nil
+            self.converter = nil
             throw CaptureError.engineStartFailed(error)
         }
 
         isRecording = true
+        startedAt = ProcessInfo.processInfo.systemUptime
     }
 
     /// Stop recording and return all captured samples (16 kHz mono Float32).
     @discardableResult
-    func stop() -> [Float] {
-        guard isRecording else { return [] }
+    func stop() -> CaptureResult {
+        guard isRecording, let engine else {
+            return CaptureResult(
+                samples: [],
+                configurationChanged: false,
+                conversionError: nil,
+                callbackCount: 0,
+                inputFrameCount: 0,
+                wallDuration: 0
+            )
+        }
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
+        engine.reset()
         isRecording = false
+        let wallDuration = startedAt.map {
+            max(0, ProcessInfo.processInfo.systemUptime - $0)
+        } ?? 0
+        startedAt = nil
+
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+        }
+        self.configurationObserver = nil
+        self.engine = nil
+        self.converter = nil
 
         lock.lock()
         let captured = samples
+        let didChangeConfiguration = configurationChanged
+        let capturedConversionError = conversionError
+        let capturedCallbackCount = callbackCount
+        let capturedInputFrameCount = inputFrameCount
         samples.removeAll(keepingCapacity: true)
+        configurationChanged = false
+        conversionError = nil
+        callbackCount = 0
+        inputFrameCount = 0
         lock.unlock()
-        return captured
+        return CaptureResult(
+            samples: captured,
+            configurationChanged: didChangeConfiguration,
+            conversionError: capturedConversionError,
+            callbackCount: capturedCallbackCount,
+            inputFrameCount: capturedInputFrameCount,
+            wallDuration: wallDuration
+        )
     }
 
     private func process(
@@ -103,19 +188,34 @@ final class AudioCapture {
 
         var error: NSError?
         let status = converter.convert(to: outBuffer, error: &error, withInputFrom: inputBlock)
-        guard status != .error, let channelData = outBuffer.floatChannelData else { return }
+        guard status != .error, let channelData = outBuffer.floatChannelData else {
+            if let error {
+                lock.lock()
+                conversionError = error
+                lock.unlock()
+            }
+            return
+        }
 
         let count = Int(outBuffer.frameLength)
         let ptr = channelData[0]
         let chunk = Array(UnsafeBufferPointer(start: ptr, count: count))
 
         lock.lock()
+        callbackCount += 1
+        inputFrameCount += Int(buffer.frameLength)
         samples.append(contentsOf: chunk)
         lock.unlock()
 
         if let onLevel {
             onLevel(computeRMS(chunk))
         }
+    }
+
+    private func markConfigurationChanged() {
+        lock.lock()
+        configurationChanged = true
+        lock.unlock()
     }
 }
 
@@ -148,7 +248,52 @@ enum WAVWriter {
             data.append(uint16LE(UInt16(bitPattern: i)))
         }
 
-        try data.write(to: URL(fileURLWithPath: path))
+        // Audio can contain private dictation. Create the file atomically with
+        // mode 0600 and refuse existing paths/symlinks instead of writing first
+        // and tightening permissions afterwards.
+        let descriptor = Darwin.open(
+            path,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            S_IRUSR | S_IWUSR
+        )
+        guard descriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+
+        var completed = false
+        defer {
+            Darwin.close(descriptor)
+            if !completed {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+        }
+
+        var writeError: Int32?
+        let bytesWritten = data.withUnsafeBytes { rawBuffer -> Int in
+            guard let baseAddress = rawBuffer.baseAddress else { return 0 }
+            var total = 0
+            while total < rawBuffer.count {
+                let count = Darwin.write(
+                    descriptor,
+                    baseAddress.advanced(by: total),
+                    rawBuffer.count - total
+                )
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    writeError = errno
+                    return total
+                }
+                total += count
+            }
+            return total
+        }
+        guard bytesWritten == data.count, writeError == nil else {
+            throw NSError(
+                domain: NSPOSIXErrorDomain,
+                code: Int(writeError ?? EIO)
+            )
+        }
+        completed = true
     }
 
     private static func uint32LE(_ v: UInt32) -> Data {
