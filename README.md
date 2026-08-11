@@ -82,6 +82,8 @@ See [docs/architecture.md](docs/architecture.md) for the design and safety model
 
 The installer downloads the latest GitHub release, verifies its published SHA-256 checksum, checks the app signature and stable identity, and installs `/Applications/Parrot.app`. Updates are staged transactionally. If a running replacement cannot become ready, the installer restores the prior app and service.
 
+This is an open-source beta. The release is ad hoc signed and is not Apple-notarized. The installer removes quarantine only after the checksum, archive paths, signature, and app identity pass verification. You can [read the installer](scripts/install.sh) before running it.
+
 ## License
 
 Parrot remains available under the original project's [MIT License](LICENSE).
