@@ -15,6 +15,68 @@ private actor OrderedRecorder {
     }
 }
 
+private final class FakeDictationDeliveryGuard: DictationDeliveryGuard {
+    var allowsInjection: Bool
+
+    init(allowsInjection: Bool = true) {
+        self.allowsInjection = allowsInjection
+    }
+
+    func canInjectIntoOriginalFocus() -> Bool {
+        allowsInjection
+    }
+}
+
+@Test func accessibilityUncertaintyIsNeverClassifiedAsNonsecure() {
+    #expect(focusSecurityStatusForSubroleLookup(
+        status: .cannotComplete,
+        subrole: nil,
+        valueWasPresent: false
+    ) == .unobservable)
+    #expect(focusSecurityStatusForSubroleLookup(
+        status: .success,
+        subrole: nil,
+        valueWasPresent: false
+    ) == .unobservable)
+    #expect(focusSecurityStatusForSubroleLookup(
+        status: .success,
+        subrole: nil,
+        valueWasPresent: true
+    ) == .unobservable)
+    #expect(focusSecurityStatusForSubroleLookup(
+        status: .success,
+        subrole: kAXSecureTextFieldSubrole as String,
+        valueWasPresent: true
+    ) == .secure)
+    #expect(focusSecurityStatusForSubroleLookup(
+        status: .noValue,
+        subrole: nil,
+        valueWasPresent: false
+    ) == .nonsecure)
+    #expect(focusSecurityStatusForProtectedContentLookup(
+        status: .success,
+        containsProtectedContent: true,
+        valueWasPresent: true
+    ) == .secure)
+    #expect(focusSecurityStatusForProtectedContentLookup(
+        status: .success,
+        containsProtectedContent: false,
+        valueWasPresent: true
+    ) == .nonsecure)
+    #expect(focusSecurityStatusForProtectedContentLookup(
+        status: .success,
+        containsProtectedContent: nil,
+        valueWasPresent: false
+    ) == .unobservable)
+    #expect(focusSecurityStatusForProtectedContentLookup(
+        status: .cannotComplete,
+        containsProtectedContent: nil,
+        valueWasPresent: false
+    ) == .unobservable)
+    #expect(combinedFocusSecurityStatus(.nonsecure, .secure) == .secure)
+    #expect(combinedFocusSecurityStatus(.nonsecure, .unobservable) == .unobservable)
+}
+
 @Test func computeRMSHandlesSilenceAndFullScaleAudio() {
     #expect(computeRMS([]) == 0)
     #expect(abs(computeRMS([1, -1, 1, -1]) - 1) < 0.0001)
@@ -127,15 +189,56 @@ private actor OrderedRecorder {
 @Test func fnGlobeKeyDownDoesNotInvalidateEditorFocus() {
     #expect(!shouldMarkFocusInteractionForKeyDown(
         keyCode: fnGlobeVirtualKeyCode,
-        isOwnProcess: false
+        isOwnProcess: false,
+        hasShortcutModifier: true,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 1.836
     ))
 }
 
-@Test func payloadFreeDuplicateAtShortcutEdgeDoesNotInvalidateEditorFocus() {
+@Test func observedGlobeAuxiliaryKeyDownDoesNotInvalidateEditorFocus() {
+    // The live Mac emits key code 179 with no Unicode payload during the
+    // second Control + Globe cycle. It is control input, not composer input.
+    #expect(!shouldMarkFocusInteractionForKeyDown(
+        keyCode: globeAuxiliaryVirtualKeyCode,
+        isOwnProcess: false,
+        hasShortcutModifier: true,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 1.836
+    ))
+}
+
+@Test func unrelatedGlobeAuxiliaryEventsInvalidateEditorFocus() {
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: globeAuxiliaryVirtualKeyCode,
+        isOwnProcess: false,
+        hasShortcutModifier: true,
+        unicodeCharacterCount: 1,
+        secondsSinceToggle: 0.05
+    ))
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: globeAuxiliaryVirtualKeyCode,
+        isOwnProcess: false,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 0.05
+    ))
+    #expect(shouldMarkFocusInteractionForKeyDown(
+        keyCode: 0,
+        isOwnProcess: false,
+        hasShortcutModifier: true,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 30
+    ))
+}
+
+@Test func payloadFreeDuplicateAfterPartialModifierReleaseDoesNotInvalidateEditorFocus() {
+    // The payload-free duplicate can arrive after either Control or Fn/Globe
+    // has lifted. One remaining shortcut modifier still identifies it as part
+    // of the same physical toggle.
     #expect(!shouldMarkFocusInteractionForKeyDown(
         keyCode: 0,
         isOwnProcess: false,
-        isShortcutChordActive: true,
+        hasShortcutModifier: true,
         unicodeCharacterCount: 0,
         secondsSinceToggle: 0.05
     ))
@@ -145,21 +248,21 @@ private actor OrderedRecorder {
     #expect(shouldMarkFocusInteractionForKeyDown(
         keyCode: 0,
         isOwnProcess: false,
-        isShortcutChordActive: true,
+        hasShortcutModifier: true,
         unicodeCharacterCount: 1,
         secondsSinceToggle: 0.05
     ))
     #expect(shouldMarkFocusInteractionForKeyDown(
         keyCode: 123,
         isOwnProcess: false,
-        isShortcutChordActive: true,
+        hasShortcutModifier: true,
         unicodeCharacterCount: 0,
         secondsSinceToggle: 0.05
     ))
     #expect(shouldMarkFocusInteractionForKeyDown(
         keyCode: 0,
         isOwnProcess: false,
-        isShortcutChordActive: true,
+        hasShortcutModifier: true,
         unicodeCharacterCount: 0,
         canIgnoreShortcutDuplicate: false,
         secondsSinceToggle: 0.05
@@ -167,7 +270,7 @@ private actor OrderedRecorder {
     #expect(shouldMarkFocusInteractionForKeyDown(
         keyCode: 0,
         isOwnProcess: false,
-        isShortcutChordActive: true,
+        hasShortcutModifier: true,
         unicodeCharacterCount: 0,
         secondsSinceToggle: shortcutDuplicateMaximumDelay + 0.01
     ))
@@ -177,7 +280,10 @@ private actor OrderedRecorder {
     #expect(shouldConsumeShortcutDuplicateOpportunity(
         keyCode: 0,
         isOwnProcess: false,
-        isParrotInjected: false
+        isParrotInjected: false,
+        hasShortcutModifier: false,
+        unicodeCharacterCount: 1,
+        secondsSinceToggle: 0.05
     ))
     #expect(!shouldConsumeShortcutDuplicateOpportunity(
         keyCode: 0,
@@ -192,7 +298,25 @@ private actor OrderedRecorder {
     #expect(!shouldConsumeShortcutDuplicateOpportunity(
         keyCode: fnGlobeVirtualKeyCode,
         isOwnProcess: false,
-        isParrotInjected: false
+        isParrotInjected: false,
+        hasShortcutModifier: true,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 1.836
+    ))
+    #expect(!shouldConsumeShortcutDuplicateOpportunity(
+        keyCode: globeAuxiliaryVirtualKeyCode,
+        isOwnProcess: false,
+        isParrotInjected: false,
+        hasShortcutModifier: true,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 1.836
+    ))
+    #expect(shouldConsumeShortcutDuplicateOpportunity(
+        keyCode: globeAuxiliaryVirtualKeyCode,
+        isOwnProcess: false,
+        isParrotInjected: false,
+        unicodeCharacterCount: 0,
+        secondsSinceToggle: 0.05
     ))
 }
 
@@ -221,59 +345,92 @@ private actor OrderedRecorder {
     ))
 }
 
-@Test func consecutiveDictationGetsOnlyTheNeededBoundary() {
-    #expect(textWithNaturalDictationBoundary(
+@Test func everyCaptureOwnsItsTrailingBoundary() {
+    #expect(textWithIndependentDictationBoundary("Okay.") == "Okay. ")
+    #expect(textWithIndependentDictationBoundary("already spaced ") == "already spaced ")
+    #expect(textWithIndependentDictationBoundary("") == "")
+}
+
+@Test func twoDistinctCapturesInsertTheirOwnTextExactlyOnce() {
+    let guardForFirstCapture = FakeDictationDeliveryGuard()
+    let guardForSecondCapture = FakeDictationDeliveryGuard()
+    var editor = ""
+    var payloads = [String]()
+
+    let first = TextInjector.deliver(
+        "Okay.",
+        deliveryGuard: guardForFirstCapture,
+        currentFocusSecurity: { .nonsecure },
+        postText: {
+            payloads.append($0)
+            editor += $0
+            return true
+        }
+    )
+    let second = TextInjector.deliver(
         "What do you mean?",
-        previousTrailingCharacter: "."
-    ) == " What do you mean?")
-    #expect(textWithNaturalDictationBoundary(
-        "continues here",
-        previousTrailingCharacter: "d"
-    ) == " continues here")
-    #expect(textWithNaturalDictationBoundary(
-        "already spaced",
-        previousTrailingCharacter: " "
-    ) == "already spaced")
-    #expect(textWithNaturalDictationBoundary(
-        " world",
-        previousTrailingCharacter: "."
-    ) == " world")
-    #expect(textWithNaturalDictationBoundary(
-        ", then this",
-        previousTrailingCharacter: "d"
-    ) == ", then this")
-    #expect(textWithNaturalDictationBoundary(
-        "inside",
-        previousTrailingCharacter: "("
-    ) == "inside")
-    #expect(textWithNaturalDictationBoundary(
-        "inside smart quotes",
-        previousTrailingCharacter: "“"
-    ) == "inside smart quotes")
-    #expect(textWithNaturalDictationBoundary(
-        "”",
-        previousTrailingCharacter: "d"
-    ) == "”")
-    #expect(textWithNaturalDictationBoundary(
-        "first text",
-        previousTrailingCharacter: nil
-    ) == "first text")
+        deliveryGuard: guardForSecondCapture,
+        currentFocusSecurity: { .nonsecure },
+        postText: {
+            payloads.append($0)
+            editor += $0
+            return true
+        }
+    )
+
+    #expect(first == .sentUnconfirmed("Okay. "))
+    #expect(second == .sentUnconfirmed("What do you mean? "))
+    #expect(payloads == ["Okay. ", "What do you mean? "])
+    #expect(editor == "Okay. What do you mean? ")
+}
+
+@Test func injectedTextEventsNeverInheritThePhysicalShortcutModifiers() {
+    let chunk = Array("current transcript".utf16)
+    let pair = TextInjector.makeInjectionEventPair(chunk: chunk)
+    #expect(pair != nil)
+    guard let (keyDown, keyUp) = pair else { return }
+
+    #expect(keyDown.getIntegerValueField(.eventSourceStateID)
+        == keyUp.getIntegerValueField(.eventSourceStateID))
+
+    for event in [keyDown, keyUp] {
+        #expect(event.flags.intersection([
+            .maskControl,
+            .maskSecondaryFn,
+            .maskCommand,
+            .maskAlternate,
+            .maskShift
+        ]).isEmpty == true)
+        #expect(event.getIntegerValueField(.eventSourceUserData)
+            == parrotInjectedEventMarker)
+
+        var actualLength = 0
+        var actual = [UniChar](repeating: 0, count: chunk.count)
+        event.keyboardGetUnicodeString(
+            maxStringLength: chunk.count,
+            actualStringLength: &actualLength,
+            unicodeString: &actual
+        )
+        #expect(actualLength == chunk.count)
+        #expect(Array(actual.prefix(actualLength)) == chunk)
+    }
 }
 
 @Test func clipboardFallbackKeepsTheRawTranscript() {
     let pasteboard = NSPasteboard(
         name: NSPasteboard.Name("parrot-tests-\(UUID().uuidString)")
     )
+    pasteboard.clearContents()
+    #expect(pasteboard.setString("prior transcript", forType: .string))
     let result = TextInjector.deliver(
-        "standalone transcript",
+        "current transcript",
         deliveryGuard: nil,
         pasteboard: pasteboard,
-        prepareForInjection: { " " + $0 },
-        currentFocusIsSecure: { false }
+        currentFocusSecurity: { .nonsecure }
     )
 
     #expect(result == .copiedToClipboard)
-    #expect(pasteboard.string(forType: .string) == "standalone transcript")
+    #expect(pasteboard.string(forType: .string) == "current transcript")
     pasteboard.clearContents()
 }
 
@@ -289,9 +446,9 @@ private actor OrderedRecorder {
         "sensitive transcript",
         deliveryGuard: nil,
         pasteboard: pasteboard,
-        currentFocusIsSecure: {
+        currentFocusSecurity: {
             secureChecks += 1
-            return secureChecks > 2
+            return secureChecks > 2 ? .secure : .nonsecure
         }
     )
 
@@ -301,15 +458,48 @@ private actor OrderedRecorder {
     pasteboard.clearContents()
 }
 
-@Test func caretAdvancesPastInsertedTextAndReplacedSelection() {
-    let replacement = CFRange(location: 4, length: 3)
-    let result = caretRangeAfterInsertion(
-        replacing: replacement,
-        insertedText: "go🙂"
+@Test func unobservableFocusNeverPostsOrWritesTheClipboard() {
+    let pasteboard = NSPasteboard(
+        name: NSPasteboard.Name("parrot-unobservable-focus-tests-\(UUID().uuidString)")
+    )
+    pasteboard.clearContents()
+    #expect(pasteboard.setString("existing clipboard", forType: .string))
+    var posted = false
+
+    let result = TextInjector.deliver(
+        "sensitive transcript",
+        deliveryGuard: FakeDictationDeliveryGuard(),
+        pasteboard: pasteboard,
+        currentFocusSecurity: { .unobservable },
+        postText: { _ in
+            posted = true
+            return true
+        }
     )
 
-    #expect(result.location == 8)
-    #expect(result.length == 0)
+    #expect(result == .blockedUnobservableFocus)
+    #expect(!posted)
+    #expect(pasteboard.string(forType: .string) == "existing clipboard")
+    pasteboard.clearContents()
+}
+
+@Test func eventConstructionFailureFallsBackToRawCurrentTranscript() {
+    let pasteboard = NSPasteboard(
+        name: NSPasteboard.Name("parrot-post-failure-tests-\(UUID().uuidString)")
+    )
+    pasteboard.clearContents()
+
+    let result = TextInjector.deliver(
+        "current transcript",
+        deliveryGuard: FakeDictationDeliveryGuard(),
+        pasteboard: pasteboard,
+        currentFocusSecurity: { .nonsecure },
+        postText: { _ in false }
+    )
+
+    #expect(result == .copiedToClipboard)
+    #expect(pasteboard.string(forType: .string) == "current transcript")
+    pasteboard.clearContents()
 }
 
 @Test func dictationToggleAlternatesAndRecoversFromStartFailure() {
@@ -371,4 +561,50 @@ private actor OrderedRecorder {
     } catch {
         Issue.record("unexpected timeout error: \(error)")
     }
+}
+
+@Test func accessibilityApprovalRequiresTwoConsecutiveTrustedChecks() {
+    var checks = [false, true, false, true, true]
+    var pauses = 0
+
+    let granted = waitForConsecutiveAccessibilityChecks(
+        maxAttempts: checks.count,
+        isTrusted: { checks.removeFirst() },
+        pause: { pauses += 1 }
+    )
+
+    #expect(granted)
+    #expect(checks.isEmpty)
+    #expect(pauses == 4)
+}
+
+@Test func accessibilityApprovalTimesOutWithoutStableTrust() {
+    var checks = [false, true, false, true]
+    var pauses = 0
+
+    let granted = waitForConsecutiveAccessibilityChecks(
+        maxAttempts: checks.count,
+        isTrusted: { checks.removeFirst() },
+        pause: { pauses += 1 }
+    )
+
+    #expect(!granted)
+    #expect(checks.isEmpty)
+    #expect(pauses == 3)
+}
+
+@Test func accessibilityApprovalRejectsInvalidPollingConfiguration() {
+    var checked = false
+    let granted = waitForConsecutiveAccessibilityChecks(
+        maxAttempts: 0,
+        requiredConsecutiveChecks: 0,
+        isTrusted: {
+            checked = true
+            return true
+        },
+        pause: {}
+    )
+
+    #expect(!granted)
+    #expect(!checked)
 }

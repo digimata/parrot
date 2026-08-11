@@ -121,6 +121,10 @@ final class HotkeyMonitor {
         }
     }
 
+    fileprivate func invalidateFocusForUnobservableInput() {
+        onEvent?(.focusInteraction)
+    }
+
     fileprivate func handle(type: CGEventType, event: CGEvent, observedAt: Date) {
         if debug {
             let flags = event.flags
@@ -146,11 +150,22 @@ final class HotkeyMonitor {
                 actualStringLength: &unicodeLength,
                 unicodeString: nil
             )
+            let sessionFlags = CGEventSource.flagsState(.combinedSessionState)
+            let hasShortcutModifier = event.flags.contains(.maskControl)
+                || event.flags.contains(.maskSecondaryFn)
+                || sessionFlags.contains(.maskControl)
+                || sessionFlags.contains(.maskSecondaryFn)
             let canIgnoreShortcutDuplicate = shortcutDuplicateAvailable
             if shouldConsumeShortcutDuplicateOpportunity(
                 keyCode: keyCode,
                 isOwnProcess: isOwnProcess,
-                isParrotInjected: isParrotInjected
+                isParrotInjected: isParrotInjected,
+                hasShortcutModifier: hasShortcutModifier,
+                unicodeCharacterCount: unicodeLength,
+                canIgnoreShortcutDuplicate: canIgnoreShortcutDuplicate,
+                secondsSinceToggle: lastToggleObservedAt.map {
+                    observedAt.timeIntervalSince($0)
+                }
             ) {
                 shortcutDuplicateAvailable = false
             }
@@ -158,7 +173,7 @@ final class HotkeyMonitor {
                 keyCode: keyCode,
                 isOwnProcess: isOwnProcess,
                 isParrotInjected: isParrotInjected,
-                isShortcutChordActive: event.flags.contains(requiredFlags),
+                hasShortcutModifier: hasShortcutModifier,
                 unicodeCharacterCount: unicodeLength,
                 canIgnoreShortcutDuplicate: canIgnoreShortcutDuplicate,
                 secondsSinceToggle: lastToggleObservedAt.map {
@@ -180,11 +195,14 @@ final class HotkeyMonitor {
     }
 }
 
-/// The Fn/Globe shortcut can produce a payload-free keyDown immediately after
-/// its modifier edge. Only that exact duplicate signature is excluded from
-/// focus invalidation. Real text, navigation keys, and later events remain
-/// fail-safe focus interactions while a transcript is pending.
+/// The Fn/Globe shortcut can produce a payload-free physical control keyDown
+/// before its modifier edge and a payload-free duplicate immediately after it.
+/// Only those control signatures are excluded from focus invalidation. Real
+/// text, navigation keys, and later ordinary events remain fail-safe.
 let fnGlobeVirtualKeyCode: Int64 = 63
+// The built-in keyboard also emits this payload-free auxiliary Globe event.
+// It is part of the physical shortcut, not text or navigation input.
+let globeAuxiliaryVirtualKeyCode: Int64 = 179
 let shortcutDuplicateMaximumDelay: TimeInterval = 0.2
 // A per-process marker distinguishes Parrot's synthesized Unicode events from
 // real user input without trusting the source PID reported by Core Graphics.
@@ -193,31 +211,64 @@ let parrotInjectedEventMarker = Int64.random(in: 1 ... Int64.max)
 func shouldConsumeShortcutDuplicateOpportunity(
     keyCode: Int64,
     isOwnProcess: Bool,
-    isParrotInjected: Bool
+    isParrotInjected: Bool,
+    hasShortcutModifier: Bool = false,
+    unicodeCharacterCount: Int = 1,
+    canIgnoreShortcutDuplicate: Bool = true,
+    secondsSinceToggle: TimeInterval? = nil
 ) -> Bool {
-    keyCode != fnGlobeVirtualKeyCode && !isOwnProcess && !isParrotInjected
+    !isOwnProcess
+        && !isParrotInjected
+        && !isShortcutDuplicateKeyDown(
+            keyCode: keyCode,
+            hasShortcutModifier: hasShortcutModifier,
+            unicodeCharacterCount: unicodeCharacterCount,
+            canIgnoreShortcutDuplicate: canIgnoreShortcutDuplicate,
+            secondsSinceToggle: secondsSinceToggle
+        )
+}
+
+func isShortcutDuplicateKeyDown(
+    keyCode: Int64,
+    hasShortcutModifier: Bool,
+    unicodeCharacterCount: Int,
+    canIgnoreShortcutDuplicate: Bool,
+    secondsSinceToggle: TimeInterval?
+) -> Bool {
+    let isPhysicalShortcutKey = keyCode == fnGlobeVirtualKeyCode
+        || keyCode == globeAuxiliaryVirtualKeyCode
+    let isPhysicalShortcutControl = isPhysicalShortcutKey
+        && hasShortcutModifier
+        && unicodeCharacterCount == 0
+    let isPostEdgeDuplicate = canIgnoreShortcutDuplicate
+        && keyCode == 0
+        && hasShortcutModifier
+        && unicodeCharacterCount == 0
+        && secondsSinceToggle.map {
+            $0 >= 0 && $0 <= shortcutDuplicateMaximumDelay
+        } == true
+    return isPhysicalShortcutControl || isPostEdgeDuplicate
 }
 
 func shouldMarkFocusInteractionForKeyDown(
     keyCode: Int64,
     isOwnProcess: Bool,
     isParrotInjected: Bool = false,
-    isShortcutChordActive: Bool = false,
+    hasShortcutModifier: Bool = false,
     unicodeCharacterCount: Int = 1,
     canIgnoreShortcutDuplicate: Bool = true,
     secondsSinceToggle: TimeInterval? = nil
 ) -> Bool {
-    let isShortcutDuplicate = canIgnoreShortcutDuplicate
-        && keyCode == 0
-        && isShortcutChordActive
-        && unicodeCharacterCount == 0
-        && secondsSinceToggle.map {
-            $0 >= 0 && $0 <= shortcutDuplicateMaximumDelay
-        } == true
+    let isShortcutDuplicate = isShortcutDuplicateKeyDown(
+        keyCode: keyCode,
+        hasShortcutModifier: hasShortcutModifier,
+        unicodeCharacterCount: unicodeCharacterCount,
+        canIgnoreShortcutDuplicate: canIgnoreShortcutDuplicate,
+        secondsSinceToggle: secondsSinceToggle
+    )
     return !isOwnProcess
         && !isParrotInjected
         && !isShortcutDuplicate
-        && keyCode != fnGlobeVirtualKeyCode
 }
 
 private func hotkeyCallback(
@@ -230,20 +281,19 @@ private func hotkeyCallback(
     let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
 
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        // Invalidate before queueing recovery. A completed transcript must not
+        // overtake the signal that some input may have been missed.
+        monitor.invalidateFocusForUnobservableInput()
         DispatchQueue.main.async {
             monitor.reenableAfterSystemDisable()
         }
         return Unmanaged.passUnretained(event)
     }
 
-    let copy = event.copy()
-    // Capture observation time in the event-tap callback, before main-queue
-    // work such as stopping and converting a long recording can delay handling.
+    // Classify the event in the tap callback so a click or keystroke cannot sit
+    // behind a completed transcript on the main queue. The caller records
+    // focus invalidation immediately and queues heavier toggle work separately.
     let observedAt = Date()
-    DispatchQueue.main.async {
-        if let copy {
-            monitor.handle(type: type, event: copy, observedAt: observedAt)
-        }
-    }
+    monitor.handle(type: type, event: event, observedAt: observedAt)
     return Unmanaged.passUnretained(event)
 }

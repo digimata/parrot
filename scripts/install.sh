@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # parrot installer.
-#   curl -fsSL https://digimata.github.io/parrot/install.sh | sh
+#   curl -fsSL https://github.com/willmather95/parrot/releases/latest/download/install.sh | bash
 #
 # Fetches the latest arm64 macOS app from GitHub Releases, verifies its
 # published SHA-256 checksum, installs the stable signed app identity in
 # /Applications, and links its CLI into /usr/local/bin.
 #
-# Apple Silicon only — WhisperKit uses the Apple Neural Engine via CoreML,
-# which only ships on M-series chips.
+# Apple Silicon only. Parrot's local inference engines require an M-series Mac.
 
 set -euo pipefail
 
-REPO="digimata/parrot"
+REPO="willmather95/parrot"
 BIN_NAME="parrot"
 INSTALL_DIR="/usr/local/bin"
 ASSET="parrot-macos-arm64.tar.gz"
@@ -66,10 +65,32 @@ curl "${CURL_FLAGS[@]}" "$URL" -o "$TMP/${ASSET}"
 curl "${CURL_FLAGS[@]}" "$CHECKSUM_URL" -o "$TMP/${ASSET}.sha256"
 
 dim "→ verifying SHA-256..."
-(
-    cd "$TMP"
-    shasum -a 256 -c "${ASSET}.sha256"
-)
+IFS=' ' read -r EXPECTED_HASH CHECKSUM_NAME CHECKSUM_EXTRA < "$TMP/${ASSET}.sha256"
+if [ "${#EXPECTED_HASH}" -ne 64 ] \
+    || [[ "$EXPECTED_HASH" == *[!0-9a-f]* ]] \
+    || [ "$CHECKSUM_NAME" != "$ASSET" ] \
+    || [ -n "${CHECKSUM_EXTRA:-}" ]; then
+    red "release checksum has an unexpected format"
+    exit 1
+fi
+ACTUAL_HASH=$(shasum -a 256 "$TMP/${ASSET}" | awk '{print $1}')
+if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+    red "release checksum verification failed"
+    exit 1
+fi
+green "✓ release checksum verified"
+
+ARCHIVE_LIST=$(tar -tzf "$TMP/${ASSET}")
+if printf '%s\n' "$ARCHIVE_LIST" | grep -E '(^/|(^|/)\.\.(/|$))' >/dev/null; then
+    red "release archive contains an unsafe path"
+    exit 1
+fi
+for required_path in parrot Parrot.app/Contents/MacOS/parrot; do
+    if ! printf '%s\n' "$ARCHIVE_LIST" | grep -Fx "$required_path" >/dev/null; then
+        red "release archive is missing ${required_path}"
+        exit 1
+    fi
+done
 
 dim "→ extracting..."
 tar -xzf "$TMP/${ASSET}" -C "$TMP"
@@ -126,7 +147,10 @@ if [ -e "$APP_DIR" ]; then
 fi
 if ! $APP_SUDO mv "$APP_STAGE" "$APP_DIR"; then
     if [ -e "$APP_BACKUP" ]; then
-        $APP_SUDO mv "$APP_BACKUP" "$APP_DIR"
+        if ! $APP_SUDO mv "$APP_BACKUP" "$APP_DIR"; then
+            red "couldn't install Parrot or restore the prior app at ${APP_DIR}"
+            exit 1
+        fi
     fi
     red "couldn't replace ${APP_DIR}; the prior app was restored"
     exit 1
@@ -134,7 +158,10 @@ fi
 if ! $APP_SUDO codesign --verify --deep --strict --verbose=2 "$APP_DIR"; then
     $APP_SUDO rm -rf "$APP_DIR"
     if [ -e "$APP_BACKUP" ]; then
-        $APP_SUDO mv "$APP_BACKUP" "$APP_DIR"
+        if ! $APP_SUDO mv "$APP_BACKUP" "$APP_DIR"; then
+            red "installed app failed verification and the prior app could not be restored"
+            exit 1
+        fi
     fi
     red "installed app failed verification; the prior app was restored"
     exit 1
@@ -155,7 +182,10 @@ if [ "$AGENT_WAS_REGISTERED" = true ]; then
         launchctl bootout "$AGENT_TARGET" >/dev/null 2>&1 || true
         $APP_SUDO rm -rf "$APP_DIR"
         if [ -e "$APP_BACKUP" ]; then
-            $APP_SUDO mv "$APP_BACKUP" "$APP_DIR"
+            if ! $APP_SUDO mv "$APP_BACKUP" "$APP_DIR"; then
+                red "the update failed and the prior app could not be restored"
+                exit 1
+            fi
             $SUDO ln -sf "$APP_DIR/Contents/MacOS/parrot" "${INSTALL_DIR}/${BIN_NAME}"
             # Use the new install command's stronger readiness verifier while
             # pointing the restored plist back at the prior app executable.
@@ -174,12 +204,28 @@ fi
 
 $APP_SUDO rm -rf "$APP_BACKUP"
 
-green "✓ parrot ${TAG} installed at ${APP_DIR}"
-if [ "$AGENT_WAS_REGISTERED" = true ]; then
-    green "✓ existing launch-at-login daemon restarted and verified ready"
+dim "→ completing first-run setup..."
+if ! "$APP_DIR/Contents/MacOS/parrot" setup; then
+    red "Parrot is installed, but setup is not complete"
+    red "finish it with: ${APP_DIR}/Contents/MacOS/parrot setup"
+    exit 1
 fi
+
+dim "→ enabling launch at login..."
+if ! "$APP_DIR/Contents/MacOS/parrot" install --launch-at-login; then
+    red "Parrot is installed and configured, but the login service could not start"
+    red "retry with: ${APP_DIR}/Contents/MacOS/parrot install --launch-at-login"
+    exit 1
+fi
+
+dim "→ verifying microphone and running service..."
+if ! "$APP_DIR/Contents/MacOS/parrot" doctor --live-audio; then
+    red "Parrot is installed, but its final verification failed"
+    red "diagnose it with: ${APP_DIR}/Contents/MacOS/parrot doctor --live-audio"
+    exit 1
+fi
+
+green "✓ parrot ${TAG} installed at ${APP_DIR}"
+green "✓ permissions, local model, microphone, and login service verified"
 echo
-echo "next:"
-echo "  parrot setup                       # grant mic + accessibility"
-echo "  parrot install --launch-at-login   # (optional) start at login"
-echo "  parrot                             # run the daemon"
+echo "Parrot is ready. Click a text field and press Control + Fn/Globe to dictate."

@@ -3,6 +3,33 @@ import ArgumentParser
 import AVFoundation
 import Foundation
 
+func waitForConsecutiveAccessibilityChecks(
+    maxAttempts: Int,
+    requiredConsecutiveChecks: Int = 2,
+    isTrusted: () -> Bool,
+    pause: () -> Void
+) -> Bool {
+    guard maxAttempts > 0, requiredConsecutiveChecks > 0 else { return false }
+
+    var consecutiveChecks = 0
+    for attempt in 0..<maxAttempts {
+        if isTrusted() {
+            consecutiveChecks += 1
+            if consecutiveChecks >= requiredConsecutiveChecks {
+                return true
+            }
+        } else {
+            consecutiveChecks = 0
+        }
+
+        if attempt + 1 < maxAttempts {
+            pause()
+        }
+    }
+
+    return false
+}
+
 struct Setup: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Walk through first-run permission setup."
@@ -13,8 +40,8 @@ struct Setup: ParsableCommand {
         print("============")
         print()
         print("Parrot needs two permissions:")
-        print("  1. Accessibility — to detect Control + Fn/Globe globally and inject text at the cursor.")
-        print("  2. Microphone — to record between Control + Fn/Globe toggle presses.")
+        print("  1. Accessibility: detect Control + Fn/Globe and insert text at the cursor.")
+        print("  2. Microphone: record between Control + Fn/Globe toggle presses.")
         print()
         let host = Bundle.main.bundleURL.pathExtension == "app" ? "Parrot" : "your terminal app"
         print("These attach to \(host).")
@@ -24,9 +51,11 @@ struct Setup: ParsableCommand {
         print()
         try waitForMicrophone()
         print()
+        try configureGlobeKey()
+        print()
         try prepareSelectedModel()
         print()
-        print("✓ all set. Run `parrot` to start the daemon.")
+        print("✓ setup complete")
     }
 
     private func waitForAccessibility() throws {
@@ -35,17 +64,28 @@ struct Setup: ParsableCommand {
             return
         }
 
-        print("→ opening accessibility prompt...")
+        print("→ opening Accessibility settings...")
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         _ = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
 
         print()
         let host = Bundle.main.bundleURL.pathExtension == "app" ? "Parrot" : "your terminal"
         print("  1. Toggle \(host) on in the Accessibility list.")
-        print("  2. Re-run `parrot setup` — macOS only picks up the grant on a fresh process.")
-        // Setup is not complete yet. A nonzero exit prevents scripts and the
-        // user from mistaking an opened Settings pane for a granted permission.
-        throw ExitCode(1)
+        print("  2. Keep this window open. Setup will continue automatically.")
+        print()
+        print("→ waiting for Accessibility approval (up to 5 minutes)...")
+
+        let granted = waitForConsecutiveAccessibilityChecks(
+            maxAttempts: 300,
+            isTrusted: { AXIsProcessTrusted() },
+            pause: { Thread.sleep(forTimeInterval: 1) }
+        )
+        guard granted else {
+            print("✗ Accessibility was not approved in time.")
+            print("  Enable \(host), then run `parrot setup` again.")
+            throw ExitCode(1)
+        }
+        print("✓ accessibility granted")
     }
 
     private func waitForMicrophone() throws {
@@ -55,8 +95,8 @@ struct Setup: ParsableCommand {
             print("✓ microphone already granted")
             return
         case .denied, .restricted:
-            print("✗ microphone is denied — macOS won't re-prompt once denied.")
-            print("  opening Settings → Privacy & Security → Microphone...")
+            print("✗ microphone is denied. macOS will not show the prompt again.")
+            print("  opening Settings > Privacy & Security > Microphone...")
             openSettings("Privacy_Microphone")
             print("  enable your terminal, then re-run `parrot setup`.")
             throw ExitCode(1)
@@ -78,6 +118,37 @@ struct Setup: ParsableCommand {
         @unknown default:
             print("? microphone in unknown state")
         }
+    }
+
+    private func configureGlobeKey() throws {
+        if case .ok = DoctorReport.checkFnKeyMapping().status {
+            print("✓ Globe key already set to Do Nothing")
+            return
+        }
+
+        print("→ setting the Globe key to Do Nothing for Parrot's shortcut...")
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        task.arguments = [
+            "write",
+            "com.apple.HIToolbox",
+            "AppleFnUsageType",
+            "-int",
+            "0",
+        ]
+        do {
+            try task.run()
+            task.waitUntilExit()
+        } catch {
+            print("✗ could not update the Globe key setting: \(error)")
+            throw ExitCode(1)
+        }
+        guard task.terminationStatus == 0 else {
+            print("✗ could not update the Globe key setting")
+            print("  Set System Settings > Keyboard > Press Globe key to > Do Nothing.")
+            throw ExitCode(1)
+        }
+        print("✓ Globe key set to Do Nothing")
     }
 
     private func openSettings(_ pane: String) {

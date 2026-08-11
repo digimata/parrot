@@ -9,6 +9,7 @@ struct Parrot: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "parrot",
         abstract: "Minimal macOS dictation daemon. Press Control + Fn/Globe to record; press again to stop.",
+        version: "0.1.0",
         subcommands: [Run.self, Setup.self, Doctor.self, Models.self, Install.self],
         defaultSubcommand: Run.self
     )
@@ -92,7 +93,6 @@ struct Run: ParsableCommand {
         }
         let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
         let deliveryGuards = DeliveryGuardStore()
-        let dictationContinuation = DictationContinuationState()
         let interactionGenerations = InteractionGenerationStore()
         let toggleState = DictationToggleState()
         let recordingLimit = RecordingLimitScheduler()
@@ -200,42 +200,45 @@ struct Run: ParsableCommand {
                     FileHandle.standardError.write(Data(
                         String(format: "→ %.2fs · %d chars\n", elapsed, text.count).utf8
                     ))
+                    // Give the main event tap one short turn to record any
+                    // already queued click or keystroke before global text is
+                    // posted. This keeps physical input ahead of delivery.
+                    try? await Task.sleep(for: .milliseconds(50))
                     await MainActor.run {
                         let shouldResetUI = interactionGenerations.isLatest(
                             deliveryGuard.uiGeneration
                         )
                         let delivery = TextInjector.deliver(
                             text,
-                            deliveryGuard: deliveryGuard,
-                            prepareForInjection: { rawText in
-                                dictationContinuation.textForInsertion(
-                                    rawText,
-                                    using: deliveryGuard
-                                )
-                            }
+                            deliveryGuard: deliveryGuard
                         )
                         switch delivery {
-                        case .injected(let insertionText):
-                            dictationContinuation.recordSuccessfulInsertion(
-                                insertionText,
-                                using: deliveryGuard
-                            )
-                            FileHandle.standardError.write(Data("  delivered to original cursor\n".utf8))
+                        case .sentUnconfirmed:
+                            FileHandle.standardError.write(Data("  sent to original cursor\n".utf8))
                         case .copiedToClipboard:
-                            dictationContinuation.clear()
-                            FileHandle.standardError.write(Data("  focus changed · copied transcript to clipboard\n".utf8))
+                            FileHandle.standardError.write(Data(
+                                "  not inserted · copied current transcript to clipboard\n".utf8
+                            ))
                             NSSound.beep()
                         case .clipboardCopyFailed:
-                            dictationContinuation.clear()
-                            FileHandle.standardError.write(Data("  focus changed · clipboard copy failed\n".utf8))
+                            FileHandle.standardError.write(Data(
+                                "  not inserted · clipboard copy failed\n".utf8
+                            ))
                             NSSound.beep()
                         case .blockedSecureField:
-                            dictationContinuation.clear()
                             FileHandle.standardError.write(Data(
                                 "  secure field focused · transcript discarded\n".utf8
                             ))
                             announceParrotState(
                                 "Parrot discarded the transcript because a secure field is focused."
+                            )
+                            NSSound.beep()
+                        case .blockedUnobservableFocus:
+                            FileHandle.standardError.write(Data(
+                                "  focus security unavailable · transcript discarded\n".utf8
+                            ))
+                            announceParrotState(
+                                "Parrot discarded the transcript because focus security could not be verified."
                             )
                             NSSound.beep()
                         }
@@ -265,9 +268,20 @@ struct Run: ParsableCommand {
 
         do {
             try monitor.start { event in
-                switch event {
-                case .toggleRequested(let observedAt):
-                    switch toggleState.toggle(observedAt: observedAt) {
+                // Focus-invalidating input is recorded synchronously from the
+                // event-tap callback. This must happen before a completed
+                // transcript can reach the main queue and post text.
+                if case .focusInteraction = event {
+                    deliveryGuards.notePointerInteraction()
+                    return
+                }
+
+                // Recording start/stop and UI work can be comparatively slow.
+                // Keep it outside the event-tap callback to avoid tap timeout.
+                DispatchQueue.main.async {
+                    switch event {
+                    case .toggleRequested(let observedAt):
+                        switch toggleState.toggle(observedAt: observedAt) {
                     case .start:
                         let uiGeneration = interactionGenerations.advance()
                         // Accessibility lookup can block on a stalled target
@@ -283,6 +297,17 @@ struct Run: ParsableCommand {
                                 menuBar.setCaptureError("secure field · recording blocked")
                                 announceParrotState(
                                     "Parrot will not record or copy text from a secure field."
+                                )
+                                NSSound.beep()
+                            }
+                            break
+                        } catch FocusCaptureError.unobservableFocus {
+                            toggleState.startFailed()
+                            MainActor.assumeIsolated {
+                                overlay?.hide()
+                                menuBar.setCaptureError("focus security unavailable · recording blocked")
+                                announceParrotState(
+                                    "Parrot could not verify focus security, so recording was blocked."
                                 )
                                 NSSound.beep()
                             }
@@ -334,24 +359,24 @@ struct Run: ParsableCommand {
                                 NSSound.beep()
                             }
                         }
-                    case .stop:
-                        finishRecording(reason: .userToggle)
-                    case .ignoredDuringSafetyRearm:
+                        case .stop:
+                            finishRecording(reason: .userToggle)
+                        case .ignoredDuringSafetyRearm:
+                            FileHandle.standardError.write(Data(
+                                "toggle ignored during safety-limit rearm window\n".utf8
+                            ))
+                        }
+                    case .focusInteraction:
+                        break
+                    case .tapRecoveryFailed:
                         FileHandle.standardError.write(Data(
-                            "toggle ignored during safety-limit rearm window\n".utf8
+                            "fatal: global hotkey tap could not be recovered; exiting for launchd restart\n".utf8
                         ))
+                        recordingLimit.cancel()
+                        if toggleState.stopIfRecording() { _ = capture.stop() }
+                        monitor.stop()
+                        Darwin.exit(EXIT_FAILURE)
                     }
-                case .focusInteraction:
-                    deliveryGuards.notePointerInteraction()
-                    dictationContinuation.clear()
-                case .tapRecoveryFailed:
-                    FileHandle.standardError.write(Data(
-                        "fatal: global hotkey tap could not be recovered; exiting for launchd restart\n".utf8
-                    ))
-                    recordingLimit.cancel()
-                    if toggleState.stopIfRecording() { _ = capture.stop() }
-                    monitor.stop()
-                    Darwin.exit(EXIT_FAILURE)
                 }
             }
         } catch {

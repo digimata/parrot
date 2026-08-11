@@ -1,60 +1,73 @@
-# parrot
+# Parrot
 
-A minimal macOS dictation daemon. Toggle recording, speak naturally, and receive on-device transcription at the cursor or on the clipboard.
+Fast, private voice-to-text for Apple Silicon Macs. Press one shortcut, speak naturally, and Parrot inserts the transcript where you started.
+
+Audio and transcription stay on your Mac. There is no account, subscription, or cloud API.
 
 ## Install
 
-```sh
-curl -fsSL https://digimata.github.io/parrot/install.sh | sh
-parrot setup                       # grants mic + accessibility, downloads the model
-parrot install --launch-at-login   # optional — runs in the background on login
-```
-
-**Requires:** macOS 14+ on Apple Silicon (M1 or newer). Transcription runs on the Apple Neural Engine via CoreML — so the installer refuses to run on Intel.
-
-The installer verifies the release SHA-256, installs an ad-hoc-signed `/Applications/Parrot.app` with the stable `com.digimata.parrot` identity, and links its executable at `/usr/local/bin/parrot`. The stable app identity is what lets macOS retain Accessibility and microphone approval across login launches.
-
-If an existing Parrot login service is running, an update restarts it and waits for a fresh ready signal before reporting success. If the replacement cannot become ready, the installer restores the prior app and service.
-
-## How to use
-
-1. **Run it.** Either `parrot install --launch-at-login` (daemonized, runs forever, lives in the menu bar), or `parrot` in any terminal tab.
-2. **Click into the text field you want to dictate into** — Messages, the address bar, a Slack thread, anywhere a cursor blinks.
-3. **Press `Control + Fn/Globe` once, then speak.** A persistent pill shows a live waveform while the microphone is hot.
-4. **Press the same chord again to stop.** The transcript types itself into the original field. If you started outside a text field, click elsewhere, switch apps, or type while recording, Parrot copies the transcript to the clipboard instead of typing it in the wrong place. Paste it with **Command-V**.
-
-Parrot refuses to start while a password or other secure text field is focused. If focus moves into one during recording or transcription, it discards that transcript instead of writing it to the system clipboard.
-
-That's it. There is no record button, no stop button, no "send". `Control + Fn/Globe` toggles the microphone.
-
-> **Note:** on most modern Macs the `Fn/Globe` key is the bottom-left key. If yours is set to "Change input source" or "Show emoji & symbols," `parrot setup` will tell you how to set it to "Do Nothing."
-
-## CLI
+Open Terminal, paste this entire line, and press Return:
 
 ```sh
-parrot                                 # run in the foreground (^C to quit)
-parrot setup                           # one-time setup: permissions + model download
-parrot install --launch-at-login       # register a LaunchAgent (background daemon)
-parrot install --uninstall             # remove the LaunchAgent
-parrot doctor                          # check permissions + Fn/Globe key setting
-parrot doctor --live-audio             # also verify real microphone frames
-parrot doctor --model-ready            # also load and verify the selected model
-parrot models list                     # list available models
-parrot models download <id>            # pre-download a model
-parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
-parrot --no-overlay                    # disable the bottom-of-screen pill
+curl -fsSL https://github.com/willmather95/parrot/releases/latest/download/install.sh | bash
 ```
 
-## Stack
+The installer walks you through the two macOS permission prompts, downloads the local speech model, verifies your microphone, and starts Parrot automatically whenever you log in.
 
-- **Swift** — single SPM executable target
-- **WhisperKit** — Whisper inference via CoreML, ANE-accelerated
-- **AVAudioEngine** — mic capture
-- **CGEventTap** — global hotkey
-- **CGEvent** — text injection at cursor
-- **NSWindow** (borderless, click-through) — recording-indicator pill
+It also sets the Globe key to "Do Nothing" so macOS does not intercept Parrot's shortcut. You can change that later in System Settings > Keyboard.
 
-See [docs/architecture.md](docs/architecture.md) for design notes.
+**Requires:** macOS 14 or newer on an Apple Silicon Mac (M1 or newer). The first install downloads the on-device speech model and can take a few minutes.
+
+## Use it
+
+1. Click the text field where you want your words to appear.
+2. Press `Control + Fn/Globe` once.
+3. Speak. The pill at the bottom of the screen confirms that Parrot is listening.
+4. Press `Control + Fn/Globe` again.
+
+Parrot inserts the transcript into the original field. If you switch apps, move focus, or type while it is listening, Parrot copies the transcript to your clipboard instead of risking the wrong destination. Press `Command-V` to paste it.
+
+Parrot will not start in a password or other secure field. If focus moves into one while Parrot is working, it discards that transcript instead of putting it on the clipboard.
+
+## Troubleshooting
+
+Run one check that verifies permissions, the real microphone path, and the selected local model:
+
+```sh
+parrot doctor --live-audio --model-ready
+```
+
+If macOS permissions were changed after installation, run:
+
+```sh
+parrot setup
+parrot install --launch-at-login
+```
+
+## Useful commands
+
+```sh
+parrot doctor                          # check permissions and shortcut settings
+parrot models list                     # list available speech models
+parrot models download <id>            # download a model before selecting it
+parrot --model whisper-large-v3-turbo  # use the larger multilingual model
+parrot install --uninstall             # stop launching Parrot at login
+```
+
+## What this fork adds
+
+This is a customized fork of [Digimata's original Parrot project](https://github.com/digimata/parrot). Full credit to Digimata for the foundation.
+
+The fork adds:
+
+- A Parakeet model tuned for fast English dictation
+- Safer cursor insertion that verifies the original field before typing
+- Clipboard fallback when focus changes
+- Protection for secure and unobservable fields
+- Runtime recovery for microphone route changes and repeated dictation
+- A checksum-verified app installer with launch-at-login setup and rollback
+
+The stable `com.digimata.parrot` app identity is intentionally preserved so macOS can retain existing Accessibility and microphone permissions across updates.
 
 ## Build from source
 
@@ -62,3 +75,13 @@ See [docs/architecture.md](docs/architecture.md) for design notes.
 swift build -c release
 .build/release/parrot --help
 ```
+
+See [docs/architecture.md](docs/architecture.md) for the design and safety model.
+
+## How the release is verified
+
+The installer downloads the latest GitHub release, verifies its published SHA-256 checksum, checks the app signature and stable identity, and installs `/Applications/Parrot.app`. Updates are staged transactionally. If a running replacement cannot become ready, the installer restores the prior app and service.
+
+## License
+
+Parrot remains available under the original project's [MIT License](LICENSE).

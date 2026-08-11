@@ -2,88 +2,86 @@ import AppKit
 import CoreGraphics
 import Foundation
 
+protocol DictationDeliveryGuard: AnyObject {
+    func canInjectIntoOriginalFocus() -> Bool
+}
+
 /// Posts a string of text at the current cursor location by synthesizing
-/// keyboard events with `CGEventKeyboardSetUnicodeString`. Works in nearly
-/// every text field on macOS; some Electron apps and secure password fields
-/// can drop characters (platform constraint).
+/// keyboard events with CGEventKeyboardSetUnicodeString.
 enum TextInjector {
     enum DeliveryResult: Equatable {
-        case injected(String)
+        case sentUnconfirmed(String)
         case copiedToClipboard
         case clipboardCopyFailed
         case blockedSecureField
+        case blockedUnobservableFocus
     }
 
-    /// Deliver text only if the field that owned focus when recording began is
-    /// still focused. Otherwise keep the transcript recoverable on the system
-    /// clipboard instead of typing it into an unrelated field.
+    /// Deliver only the current transcript, and only while the editable element
+    /// captured at recording start still owns focus. Interaction history may
+    /// invalidate that target, but no prior transcript or predicted caret can
+    /// influence this attempt.
     static func deliver(
         _ text: String,
-        deliveryGuard: DeliveryGuard?,
+        deliveryGuard: (any DictationDeliveryGuard)?,
         pasteboard: NSPasteboard = .general,
-        prepareForInjection: (String) -> String = { $0 },
-        currentFocusIsSecure: () -> Bool = { FocusSnapshot.currentFocusIsSecure() }
+        currentFocusSecurity: () -> FocusSecurityStatus = {
+            FocusSnapshot.currentFocusSecurity()
+        },
+        postText: (String) -> Bool = { inject($0) }
     ) -> DeliveryResult {
-        guard !text.isEmpty else { return .injected(text) }
+        guard !text.isEmpty else { return .sentUnconfirmed(text) }
 
-        // Re-check at delivery as well as capture start. A user can move into
-        // a password field while recording or while inference is pending; in
-        // that case the transcript must be discarded, never copied globally.
-        if currentFocusIsSecure() {
-            return .blockedSecureField
+        // A transcript captured from or delivered into a secure field must
+        // never reach either synthesized input or the global clipboard.
+        if let blocked = blockedResult(for: currentFocusSecurity()) {
+            return blocked
         }
 
-        if
-            deliveryGuard?.canInjectIntoOriginalFocus() == true,
-            deliveryGuard?.restoreCapturedSelection() == true
-        {
-            let insertionText = prepareForInjection(text)
-            // Selection restoration can briefly poll Accessibility. Re-check
-            // after it in case focus moved into a password field meanwhile.
-            if currentFocusIsSecure() {
-                return .blockedSecureField
+        if deliveryGuard?.canInjectIntoOriginalFocus() == true {
+            let insertionText = textWithIndependentDictationBoundary(text)
+            // Accessibility and event delivery can race a focus change. Check
+            // both predicates immediately before posting global text events.
+            if let blocked = blockedResult(for: currentFocusSecurity()) {
+                return blocked
             }
-            // Preparing a continuation may invalidate direct delivery if its
-            // expected caret cannot be restored. Re-check before recording a
-            // new expectation or posting any text.
             if deliveryGuard?.canInjectIntoOriginalFocus() == true {
-                let selection = deliveryGuard?.editableSelectionSnapshot()
-                // The AX selection read above can block. Validate both safety
-                // predicates immediately before posting global text events.
-                if currentFocusIsSecure() {
-                    return .blockedSecureField
-                }
-                if deliveryGuard?.canInjectIntoOriginalFocus() == true {
-                    deliveryGuard?.recordExpectedCaretAfterInsertion(
-                        insertionText,
-                        replacing: selection
-                    )
-                    inject(insertionText)
-                    return .injected(insertionText)
+                if postText(insertionText) {
+                    // CGEvent posting has no target receipt. This result means
+                    // the complete event batch was constructed and sent.
+                    return .sentUnconfirmed(insertionText)
                 }
             }
         }
 
-        // Focus can change while Accessibility restoration is in flight. Never
-        // let a transcript from that race reach the global clipboard.
-        if currentFocusIsSecure() {
-            return .blockedSecureField
+        if let blocked = blockedResult(for: currentFocusSecurity()) {
+            return blocked
         }
 
+        return copyToPasteboard(
+            text,
+            pasteboard: pasteboard,
+            currentFocusSecurity: currentFocusSecurity
+        )
+    }
+
+    private static func copyToPasteboard(
+        _ text: String,
+        pasteboard: NSPasteboard,
+        currentFocusSecurity: () -> FocusSecurityStatus
+    ) -> DeliveryResult {
         let previousItems = snapshot(pasteboard)
-        // Materializing lazy pasteboard representations can block. Re-check
-        // before mutating the clipboard with the transcript.
-        if currentFocusIsSecure() {
-            return .blockedSecureField
+        if let blocked = blockedResult(for: currentFocusSecurity()) {
+            return blocked
         }
+
         pasteboard.clearContents()
         if pasteboard.setString(text, forType: .string) {
             return .copiedToClipboard
         }
 
         // A failed clipboard write must not destroy whatever the user had
-        // copied before dictation. Restore every pasteboard representation we
-        // could snapshot, then report the failed transcript copy.
+        // copied before dictation.
         pasteboard.clearContents()
         if !previousItems.isEmpty {
             _ = pasteboard.writeObjects(previousItems)
@@ -91,37 +89,82 @@ enum TextInjector {
         return .clipboardCopyFailed
     }
 
-    /// Inject the given text at the current cursor location.
-    /// Splits long strings into chunks because the underlying API has a
-    /// per-event character limit (~20 chars).
-    private static func inject(_ text: String) {
-        guard !text.isEmpty else { return }
+    private static func blockedResult(
+        for status: FocusSecurityStatus
+    ) -> DeliveryResult? {
+        switch status {
+        case .nonsecure:
+            return nil
+        case .secure:
+            return .blockedSecureField
+        case .unobservable:
+            return .blockedUnobservableFocus
+        }
+    }
+
+    /// Split long strings because Core Graphics limits Unicode payload size.
+    private static func inject(_ text: String) -> Bool {
+        guard !text.isEmpty else { return true }
 
         let utf16 = Array(text.utf16)
         let chunkSize = 20
         var index = 0
+        var eventPairs = [(CGEvent, CGEvent)]()
 
         while index < utf16.count {
             let end = min(index + chunkSize, utf16.count)
-            var chunk = Array(utf16[index..<end])
-            postChunk(&chunk)
+            guard let pair = makeInjectionEventPair(
+                chunk: Array(utf16[index ..< end])
+            ) else {
+                return false
+            }
+            eventPairs.append(pair)
             index = end
         }
+
+        for (keyDown, keyUp) in eventPairs {
+            keyDown.post(tap: .cgSessionEventTap)
+            keyUp.post(tap: .cgSessionEventTap)
+        }
+        return true
     }
 
-    private static func postChunk(_ chunk: inout [UniChar]) {
-        let length = chunk.count
-        guard length > 0 else { return }
+    /// A private event source plus explicit empty flags prevents a stop chord
+    /// that is still physically held from leaking Control/Fn modifiers into
+    /// the transcript events.
+    static func makeInjectionEventPair(chunk: [UniChar]) -> (CGEvent, CGEvent)? {
+        guard let source = CGEventSource(stateID: .privateState) else { return nil }
+        guard
+            let keyDown = makeInjectionEvent(chunk: chunk, keyDown: true, source: source),
+            let keyUp = makeInjectionEvent(chunk: chunk, keyDown: false, source: source)
+        else {
+            return nil
+        }
+        return (keyDown, keyUp)
+    }
 
-        let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true)
-        down?.setIntegerValueField(.eventSourceUserData, value: parrotInjectedEventMarker)
-        down?.keyboardSetUnicodeString(stringLength: length, unicodeString: &chunk)
-        down?.post(tap: .cgSessionEventTap)
-
-        let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-        up?.setIntegerValueField(.eventSourceUserData, value: parrotInjectedEventMarker)
-        up?.keyboardSetUnicodeString(stringLength: length, unicodeString: &chunk)
-        up?.post(tap: .cgSessionEventTap)
+    static func makeInjectionEvent(
+        chunk: [UniChar],
+        keyDown: Bool,
+        source: CGEventSource? = nil
+    ) -> CGEvent? {
+        let eventSource = source ?? CGEventSource(stateID: .privateState)
+        let event = CGEvent(
+            keyboardEventSource: eventSource,
+            virtualKey: 0,
+            keyDown: keyDown
+        )
+        event?.flags = []
+        event?.setIntegerValueField(
+            .eventSourceUserData,
+            value: parrotInjectedEventMarker
+        )
+        var mutableChunk = chunk
+        event?.keyboardSetUnicodeString(
+            stringLength: mutableChunk.count,
+            unicodeString: &mutableChunk
+        )
+        return event
     }
 
     private static func snapshot(_ pasteboard: NSPasteboard) -> [NSPasteboardItem] {
@@ -137,58 +180,9 @@ enum TextInjector {
     }
 }
 
-/// Adds only the separator needed to continue a prior Parrot insertion. It
-/// does not otherwise rewrite model output or add spaces around punctuation.
-func textWithNaturalDictationBoundary(
-    _ text: String,
-    previousTrailingCharacter: Character?
-) -> String {
-    guard
-        let previousTrailingCharacter,
-        let firstCharacter = text.first,
-        !previousTrailingCharacter.isWhitespace,
-        !firstCharacter.isWhitespace,
-        !".,!?;:%)]}…’”".contains(firstCharacter),
-        !"([{‘“".contains(previousTrailingCharacter)
-    else {
-        return text
-    }
-    return " " + text
-}
-
-/// Remembers only Parrot's last successful direct insertion. Any real keyboard
-/// or pointer interaction clears this state before a later transcript arrives.
-final class DictationContinuationState {
-    private var previousGuard: DeliveryGuard?
-    private var previousTrailingCharacter: Character?
-
-    func textForInsertion(_ text: String, using currentGuard: DeliveryGuard) -> String {
-        guard
-            let previousGuard,
-            currentGuard.sharesOriginalFocus(with: previousGuard)
-        else {
-            return text
-        }
-        guard previousGuard.restoreExpectedCaret() else {
-            // Preserve the raw transcript on the clipboard when the editor
-            // cannot prove that it restored Parrot's previous caret.
-            currentGuard.notePointerInteraction()
-            clear()
-            return text
-        }
-        return textWithNaturalDictationBoundary(
-            text,
-            previousTrailingCharacter: previousTrailingCharacter
-        )
-    }
-
-    func recordSuccessfulInsertion(_ text: String, using deliveryGuard: DeliveryGuard) {
-        previousGuard = deliveryGuard
-        previousTrailingCharacter = text.last
-    }
-
-    func clear() {
-        previousGuard = nil
-        previousTrailingCharacter = nil
-    }
+/// Each capture owns its own separator. No previous transcript, caret, or
+/// delivery receipt is retained between recordings.
+func textWithIndependentDictationBoundary(_ text: String) -> String {
+    guard text.last?.isWhitespace == false else { return text }
+    return text + " "
 }
