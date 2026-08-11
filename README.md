@@ -1,6 +1,6 @@
 # Parrot
 
-Fast, private voice-to-text for Apple Silicon Macs. Press one shortcut, speak naturally, and Parrot inserts the transcript where you started.
+Fast, private voice-to-text for Apple Silicon Macs. Press one shortcut, speak naturally, and get clean text ready to paste.
 
 Audio and transcription stay on your Mac. There is no account, subscription, or cloud API.
 
@@ -22,12 +22,15 @@ It also sets the Globe key to "Do Nothing" so macOS does not intercept Parrot's 
 
 ## Use it
 
-1. Click the text field where you want your words to appear.
-2. Press `Control + Fn/Globe` once.
-3. Speak. The pill at the bottom of the screen confirms that Parrot is listening.
-4. Press `Control + Fn/Globe` again.
+**Best workflow, especially in Codex:** Use Parrot like a voice clipboard. Press once and let go, speak, press once again and let go, then paste the transcript.
 
-Parrot inserts the transcript into the original field. If you switch apps, move focus, or type while it is listening, Parrot copies the transcript to your clipboard instead of risking the wrong destination. Press `Command-V` to paste it.
+1. Click the text field where you want your words to appear.
+2. Press `Control + Fn/Globe` once, then release both keys. You do not need to hold them while you talk.
+3. Speak naturally. You can dictate a quick thought or talk for a minute. The pill at the bottom of the screen confirms that Parrot is listening.
+4. When you are finished, press `Control + Fn/Globe` once again, then release both keys.
+5. Parrot transcribes your recording locally and quickly. In Codex, press `Command-V` to paste the transcript.
+
+In some apps, Parrot inserts the transcript automatically. If the text already appears, you are done. If it does not, Parrot has copied it to your clipboard, so press `Command-V`. This clipboard workflow is the most dependable way to use Parrot across different apps.
 
 Codex desktop currently does not expose its composer as a focused Accessibility control. Parrot therefore uses the safe clipboard fallback there instead of guessing which opaque control owns focus. Auto-insert continues to work in apps that expose a specific editable field.
 
