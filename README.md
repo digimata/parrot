@@ -14,6 +14,8 @@ curl -fsSL https://github.com/willmather95/parrot/releases/latest/download/insta
 
 The installer walks you through the two macOS permission prompts, downloads the local speech model, verifies your microphone, and starts Parrot automatically whenever you log in.
 
+At login, a crash-aware supervisor opens Parrot as the signed app through macOS Launch Services. That keeps its menu-bar bird and bottom-of-screen listening pill attached to the active desktop instead of stranding them on the desktop that happened to exist during startup. A deliberate menu-bar Quit stays quit; a crash or fatal hotkey failure is restarted automatically.
+
 It also sets the Globe key to "Do Nothing" so macOS does not intercept Parrot's shortcut. You can change that later in System Settings > Keyboard.
 
 **Requires:** macOS 14 or newer on an Apple Silicon Mac (M1 or newer). The first install downloads the on-device speech model and can take a few minutes.
@@ -26,6 +28,8 @@ It also sets the Globe key to "Do Nothing" so macOS does not intercept Parrot's 
 4. Press `Control + Fn/Globe` again.
 
 Parrot inserts the transcript into the original field. If you switch apps, move focus, or type while it is listening, Parrot copies the transcript to your clipboard instead of risking the wrong destination. Press `Command-V` to paste it.
+
+Codex desktop currently does not expose its composer as a focused Accessibility control. Parrot therefore uses the safe clipboard fallback there instead of guessing which opaque control owns focus. Auto-insert continues to work in apps that expose a specific editable field.
 
 Parrot will not start in a password or other secure field. If focus moves into one while Parrot is working, it discards that transcript instead of putting it on the clipboard.
 
@@ -43,6 +47,8 @@ If macOS permissions were changed after installation, run:
 parrot setup
 parrot install --launch-at-login
 ```
+
+After a restart, the idle bird should appear in the menu bar. During recording, macOS shows its microphone privacy indicator and Parrot shows the listening pill near the bottom of the active display. If either Parrot surface is missing, reinstalling the login item with the command above reattaches the app to the current GUI session.
 
 ## Useful commands
 
@@ -65,6 +71,8 @@ The fork adds:
 - Clipboard fallback when focus changes
 - Protection for secure and unobservable fields
 - Runtime recovery for microphone route changes and repeated dictation
+- Clear clipboard fallback diagnostics when an app does not expose a focused Accessibility control
+- Launch Services startup so the menu-bar item and overlay follow the active desktop after login
 - A checksum-verified app installer with launch-at-login setup and rollback
 
 The stable `com.digimata.parrot` app identity is intentionally preserved so macOS can retain existing Accessibility and microphone permissions across updates.

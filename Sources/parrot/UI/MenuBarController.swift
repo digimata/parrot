@@ -9,9 +9,14 @@ final class MenuBarController {
     private let modelLabel: NSMenuItem
     private let stateLabel: NSMenuItem
     private let modelID: String
+    private let onQuit: @MainActor () -> Void
 
-    init(modelID: String) {
+    init(
+        modelID: String,
+        onQuit: @escaping @MainActor () -> Void = { NSApp.terminate(nil) }
+    ) {
         self.modelID = modelID
+        self.onQuit = onQuit
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
         let menu = NSMenu()
@@ -41,6 +46,11 @@ final class MenuBarController {
 
         statusItem.menu = menu
         configureButton(recording: false)
+    }
+
+    var isReady: Bool {
+        guard let window = statusItem.button?.window else { return false }
+        return window.windowNumber > 0 && window.screen != nil
     }
 
     func setRecording(_ recording: Bool) {
@@ -104,6 +114,6 @@ final class MenuBarController {
     }
 
     @objc private func quitClicked() {
-        NSApp.terminate(nil)
+        onQuit()
     }
 }

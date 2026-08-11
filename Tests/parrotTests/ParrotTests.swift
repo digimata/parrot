@@ -99,6 +99,58 @@ private final class FakeDictationDeliveryGuard: DictationDeliveryGuard {
     #expect(ModelRegistry.find(recommended?.id ?? "")?.id == recommended?.id)
 }
 
+@Test func loginServiceLaunchesTheAppThroughLaunchServices() {
+    let binary = "/Applications/Parrot.app/Contents/MacOS/parrot"
+    #expect(loginServiceProgramArguments(binary: binary) == [binary, "login-launcher"])
+
+    let token = UUID(uuidString: "6B72190D-5019-4D02-ABEF-8603DF6CF9F5")!
+    let arguments = loginApplicationProgramArguments(
+        application: "/Applications/Parrot.app",
+        outputLogPath: "/Users/test/Library/Logs/Parrot/parrot.out.log",
+        errorLogPath: "/Users/test/Library/Logs/Parrot/parrot.err.log",
+        quitToken: token
+    )
+
+    #expect(arguments == [
+        "-W",
+        "-g",
+        "--stdout", "/Users/test/Library/Logs/Parrot/parrot.out.log",
+        "--stderr", "/Users/test/Library/Logs/Parrot/parrot.err.log",
+        "/Applications/Parrot.app",
+        "--args", "run", "--skip-doctor",
+        "--login-quit-token", "6b72190d-5019-4d02-abef-8603df6cf9f5",
+    ])
+}
+
+@Test func loginLauncherRestartsOnlyAfterUnexpectedAppExit() {
+    #expect(loginLauncherExitCode(intentionalQuitObserved: true) == EXIT_SUCCESS)
+    #expect(loginLauncherExitCode(intentionalQuitObserved: false) == EXIT_FAILURE)
+}
+
+@Test func processLivenessUsesTheKernelInsteadOfStaleAppKitState() {
+    #expect(processIsAlive(getpid()))
+    #expect(!processIsAlive(Int32.max))
+}
+
+@Test func updaterRollbackUsesTheRestoredVersionsInstaller() throws {
+    let repositoryRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let script = try String(
+        contentsOf: repositoryRoot.appendingPathComponent("scripts/install.sh"),
+        encoding: .utf8
+    )
+    let rollbackStart = try #require(script.range(of: "restoring the prior app"))
+    let rollbackEnd = try #require(
+        script.range(of: "$APP_SUDO rm -rf \"$APP_BACKUP\"", range: rollbackStart.upperBound..<script.endIndex)
+    )
+    let rollback = script[rollbackStart.lowerBound..<rollbackEnd.lowerBound]
+
+    #expect(rollback.contains("\"$APP_DIR/Contents/MacOS/parrot\" install --launch-at-login"))
+    #expect(!rollback.contains("\"$APP_EXECUTABLE\" install --launch-at-login"))
+}
+
 @Test func deliveryGuardStoreTracksLatestPendingGuard() {
     let store = DeliveryGuardStore()
     let first = DeliveryGuard(originalFocus: nil, uiGeneration: 1)

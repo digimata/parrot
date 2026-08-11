@@ -113,6 +113,18 @@ struct FocusSnapshot {
         return CFEqual(element, currentElement)
     }
 
+    func fallbackReason() -> String {
+        guard
+            let application = NSWorkspace.shared.frontmostApplication,
+            application.processIdentifier == applicationPID
+        else {
+            return "frontmost app changed"
+        }
+        return element == nil
+            ? "focused control is not safely injectable"
+            : "original editable field no longer owns focus"
+    }
+
     static func currentFocusSecurity() -> FocusSecurityStatus {
         switch observeFocusedElement() {
         case .element(let element):
@@ -218,6 +230,16 @@ final class DeliveryGuard: DictationDeliveryGuard {
         let interactionWasObserved = observedPointerInteraction
         interactionLock.unlock()
         return !interactionWasObserved && originalFocus?.stillOwnsFocus() == true
+    }
+
+    func fallbackReason() -> String {
+        interactionLock.lock()
+        let interactionWasObserved = observedPointerInteraction
+        interactionLock.unlock()
+        if interactionWasObserved {
+            return "keyboard or pointer input was detected"
+        }
+        return originalFocus?.fallbackReason() ?? "no frontmost app was captured"
     }
 
 }

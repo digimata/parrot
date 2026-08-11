@@ -4,8 +4,11 @@ import Foundation
 /// Manage parrot's LaunchAgent so the daemon starts at login.
 ///
 /// We deliberately do NOT use SMAppService.mainApp here. A plain LaunchAgent
-/// keeps the CLI workflow simple, but it must always launch the stable signed
-/// app-bundled executable so macOS retains its TCC identity.
+/// keeps the CLI workflow inspectable. launchd supervises a bundled launcher
+/// command that opens the stable app through Launch Services, so AppKit status
+/// items, Spaces, and TCC attach to the user's GUI session. The launcher maps
+/// intentional Quit to success and every unexpected app exit to failure so
+/// KeepAlive retains crash recovery.
 struct Install: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Install or remove the launch-at-login LaunchAgent."
@@ -34,8 +37,8 @@ struct Install: ParsableCommand {
 
     // MARK: -
 
-    private static let label = "com.digimata.parrot"
-    private static let appPath = "/Applications/Parrot.app"
+    private static let label = ParrotLoginService.bundleIdentifier
+    private static let appPath = ParrotLoginService.applicationPath
 
     private var logDirectoryURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -61,6 +64,7 @@ struct Install: ParsableCommand {
         let application = try resolveApplicationPath()
         try verifyApplicationIdentity(application)
         try preparePrivateLogs()
+        try ParrotLoginService.prepareMarkerDirectory()
         let binary = "\(application)/Contents/MacOS/parrot"
         let logOffset = fileSize(at: errorLogPath)
         let previousPlist = try? Data(contentsOf: plistURL)
@@ -74,8 +78,9 @@ struct Install: ParsableCommand {
             "ProcessType": "Interactive",
             "StandardOutPath": outputLogPath,
             "StandardErrorPath": errorLogPath,
-            "ProgramArguments": [binary, "run", "--skip-doctor"],
+            "ProgramArguments": loginServiceProgramArguments(binary: binary),
             "KeepAlive": ["SuccessfulExit": false] as [String: Any],
+            "ThrottleInterval": 10,
         ]
 
         let url = plistURL
@@ -90,8 +95,22 @@ struct Install: ParsableCommand {
         )
         try data.write(to: url, options: .atomic)
 
-        // Replace any loaded copy, then verify launchd accepted the new job.
+        // Replace any loaded copy, then stop an app instance that Launch
+        // Services may own outside launchd's direct process group.
         _ = runLaunchctl(["bootout", "gui/\(uid())", url.path])
+        if let terminationFailure = terminateRunningParrotApplications() {
+            let rollbackFailure = rollbackAgent(
+                previousPlist: previousPlist,
+                wasLoaded: previousWasLoaded
+            )
+            FileHandle.standardError.write(Data(
+                installFailureMessage(
+                    terminationFailure,
+                    rollbackFailure: rollbackFailure
+                ).utf8
+            ))
+            throw ExitCode(1)
+        }
         let result = runLaunchctl(["bootstrap", "gui/\(uid())", url.path])
         if result.status != 0 {
             let rollbackFailure = rollbackAgent(
@@ -136,7 +155,8 @@ struct Install: ParsableCommand {
 
         print("✓ launch-at-login installed")
         print("  plist:  \(url.path)")
-        print("  binary: \(binary)")
+        print("  launcher: \(binary) login-launcher")
+        print("  binary:   \(binary)")
         print("  app:     \(application)")
         print("  logs:    \(outputLogPath), \(errorLogPath)")
     }
@@ -164,6 +184,11 @@ struct Install: ParsableCommand {
             }
         }
 
+        if let terminationFailure = terminateRunningParrotApplications() {
+            FileHandle.standardError.write(Data("\(terminationFailure)\n".utf8))
+            throw ExitCode(1)
+        }
+
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
             print("✓ launch-at-login removed")
@@ -188,6 +213,10 @@ struct Install: ParsableCommand {
                 failures.append("the failed new job is still registered with launchd")
                 failedJobRemoved = false
             }
+        }
+        if let terminationFailure = terminateRunningParrotApplications() {
+            failures.append(terminationFailure)
+            failedJobRemoved = false
         }
 
         if let previousPlist {
@@ -349,18 +378,25 @@ struct Install: ParsableCommand {
     ) -> String? {
         let deadline = Date().addingTimeInterval(timeout)
         var sawReadyLine = false
+        var sawUIReadyLine = false
         var latestLog = ""
 
         while Date() < deadline {
             let job = runLaunchctl(["print", "gui/\(uid())/\(Self.label)"])
             latestLog = appendedLog(at: errorLogPath, startingAt: logOffset)
             sawReadyLine = sawReadyLine || latestLog.contains("listening for control + fn/globe toggle")
+            sawUIReadyLine = sawUIReadyLine || latestLog.contains(
+                "ui ready · menu bar status item available"
+            )
 
-            if sawReadyLine && job.status == 0 && job.stdout.contains("state = running") {
+            if sawReadyLine && sawUIReadyLine
+                && job.status == 0 && job.stdout.contains("state = running")
+            {
                 return nil
             }
             if latestLog.contains("warmup failed:")
                 || latestLog.contains("failed to register hotkey tap:")
+                || latestLog.contains("ui startup failed:")
             {
                 return latestLog.trimmingCharacters(in: .whitespacesAndNewlines)
             }

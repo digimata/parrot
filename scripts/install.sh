@@ -184,9 +184,11 @@ if [ "$AGENT_WAS_REGISTERED" = true ]; then
                 red "the update failed and the prior app could not be restored"
                 exit 1
             fi
-            # Use the new install command's stronger readiness verifier while
-            # pointing the restored plist back at the prior app executable.
-            if ! "$APP_EXECUTABLE" install --launch-at-login; then
+            # Re-register with the restored version's own installer. A newer
+            # installer may use subcommands or readiness markers the prior app
+            # does not understand, so invoking the downloaded binary here can
+            # turn a safe cross-version rollback into a disabled login item.
+            if ! "$APP_DIR/Contents/MacOS/parrot" install --launch-at-login; then
                 red "the prior app was restored, but its login service could not be restarted"
                 red "run: ${APP_DIR}/Contents/MacOS/parrot install --launch-at-login"
                 exit 1

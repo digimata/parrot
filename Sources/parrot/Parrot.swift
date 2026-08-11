@@ -9,8 +9,8 @@ struct Parrot: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "parrot",
         abstract: "Minimal macOS dictation daemon. Press Control + Fn/Globe to record; press again to stop.",
-        version: "0.1.1",
-        subcommands: [Run.self, Setup.self, Doctor.self, Models.self, Install.self],
+        version: "0.1.2",
+        subcommands: [Run.self, Setup.self, Doctor.self, Models.self, Install.self, LoginLauncher.self],
         defaultSubcommand: Run.self
     )
 
@@ -41,6 +41,9 @@ struct Run: ParsableCommand {
 
     @Flag(name: .long, help: "Disable the on-screen recording overlay.")
     var noOverlay: Bool = false
+
+    @Option(name: .long, help: "Internal launch-at-login quit token.")
+    var loginQuitToken: String?
 
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
@@ -83,6 +86,10 @@ struct Run: ParsableCommand {
 
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
+        // LaunchAgents can start before AppKit has completed its ordinary app
+        // lifecycle. Finish it explicitly so status items and overlay windows
+        // are attached to the current GUI session before readiness is reported.
+        app.finishLaunching()
 
         let monitor = HotkeyMonitor(debug: debugHotkey)
         let capture = AudioCapture()
@@ -91,7 +98,33 @@ struct Run: ParsableCommand {
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
-        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
+        if let loginQuitToken,
+           ParrotLoginService.validatedToken(loginQuitToken) == nil
+        {
+            throw ValidationError("Invalid login-service quit token")
+        }
+        let requestQuit: @MainActor () -> Void = {
+            if let loginQuitToken {
+                do {
+                    try ParrotLoginService.recordIntentionalQuit(token: loginQuitToken)
+                } catch {
+                    FileHandle.standardError.write(Data(
+                        "could not record intentional Quit: \(error)\n".utf8
+                    ))
+                    NSSound.beep()
+                    return
+                }
+            }
+            NSApp.terminate(nil)
+        }
+        let menuBar = MainActor.assumeIsolated {
+            MenuBarController(modelID: chosenModel.id, onQuit: requestQuit)
+        }
+        guard MainActor.assumeIsolated({ menuBar.isReady }) else {
+            FileHandle.standardError.write(Data("ui startup failed: menu bar status item unavailable\n".utf8))
+            throw ExitCode(1)
+        }
+        FileHandle.standardError.write(Data("ui ready · menu bar status item available\n".utf8))
         let deliveryGuards = DeliveryGuardStore()
         let interactionGenerations = InteractionGenerationStore()
         let toggleState = DictationToggleState()
@@ -217,7 +250,7 @@ struct Run: ParsableCommand {
                             FileHandle.standardError.write(Data("  sent to original cursor\n".utf8))
                         case .copiedToClipboard:
                             FileHandle.standardError.write(Data(
-                                "  not inserted · copied current transcript to clipboard\n".utf8
+                                "  not inserted (\(deliveryGuard.fallbackReason())) · copied current transcript to clipboard\n".utf8
                             ))
                             NSSound.beep()
                         case .clipboardCopyFailed:
@@ -391,7 +424,7 @@ struct Run: ParsableCommand {
             recordingLimit.cancel()
             if toggleState.stopIfRecording() { _ = capture.stop() }
             monitor.stop()
-            NSApp.terminate(nil)
+            MainActor.assumeIsolated { requestQuit() }
         }
         sigint.resume()
         signal(SIGINT, SIG_IGN)

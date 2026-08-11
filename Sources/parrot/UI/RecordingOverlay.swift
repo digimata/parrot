@@ -15,13 +15,17 @@ final class RecordingOverlay {
     private let model = OverlayModel()
 
     func show(_ state: State) {
-        ensureWindow()
         if state == .recording {
             model.resetLevels()
         }
-        guard let window else { return }
+        // Seed the hosting view with the visible state. A login-launched app can
+        // otherwise create its first SwiftUI tree from `.hidden` on a Space the
+        // user is no longer viewing and never composite the first update there.
         model.state = state
+        ensureWindow()
+        guard let window else { return }
         positionAtBottomCenter(window)
+        window.contentView?.layoutSubtreeIfNeeded()
         if !window.isVisible {
             window.orderFrontRegardless()
         }
@@ -53,7 +57,7 @@ final class RecordingOverlay {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.ignoresMouseEvents = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        panel.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
 
         let host = NSHostingView(rootView: OverlayPill(model: model))
