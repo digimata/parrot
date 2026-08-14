@@ -116,14 +116,21 @@ final class AudioCapture {
         if let onLevel {
             onLevel(computeRMS(chunk))
         }
+        
+        // Additional validation for WAV encoding
+        let wavData = WAVEncoder.data(samples: chunk, sampleRate: Int(AudioCapture.targetSampleRate))
+        guard !wavData.isEmpty else {
+            print("Error: Empty WAV data")
+            return
+        }
     }
 }
 
-// MARK: - WAV writer (for debugging M3 captures)
+// MARK: - WAV encoding and writer (for debugging M3 captures)
 
-enum WAVWriter {
-    /// Write Float32 mono samples as 16-bit PCM WAV to `path`.
-    static func write(samples: [Float], sampleRate: Int, to path: String) throws {
+enum WAVEncoder {
+    /// Encodes Float32 mono samples as a 16-bit PCM WAV in memory.
+    static func data(samples: [Float], sampleRate: Int) -> Data {
         let bytesPerSample = 2
         let dataSize = samples.count * bytesPerSample
 
@@ -132,32 +139,40 @@ enum WAVWriter {
         data.append(uint32LE(36 + UInt32(dataSize)))
         data.append(contentsOf: Array("WAVE".utf8))
         data.append(contentsOf: Array("fmt ".utf8))
-        data.append(uint32LE(16))                       // fmt chunk size
-        data.append(uint16LE(1))                        // PCM
-        data.append(uint16LE(1))                        // mono
+        data.append(uint32LE(16))
+        data.append(uint16LE(1))
+        data.append(uint16LE(1))
         data.append(uint32LE(UInt32(sampleRate)))
         data.append(uint32LE(UInt32(sampleRate * bytesPerSample)))
-        data.append(uint16LE(UInt16(bytesPerSample)))   // block align
-        data.append(uint16LE(16))                       // bits per sample
+        data.append(uint16LE(UInt16(bytesPerSample)))
+        data.append(uint16LE(16))
         data.append(contentsOf: Array("data".utf8))
         data.append(uint32LE(UInt32(dataSize)))
 
-        for s in samples {
-            let clamped = max(-1.0, min(1.0, s))
-            let i = Int16(clamped * 32767.0)
-            data.append(uint16LE(UInt16(bitPattern: i)))
+        for sample in samples {
+            let clamped = max(-1.0, min(1.0, sample))
+            let value = Int16(clamped * 32767.0)
+            data.append(uint16LE(UInt16(bitPattern: value)))
         }
-
-        try data.write(to: URL(fileURLWithPath: path))
+        return data
     }
 
-    private static func uint32LE(_ v: UInt32) -> Data {
-        var x = v.littleEndian
-        return Data(bytes: &x, count: 4)
+    private static func uint32LE(_ value: UInt32) -> Data {
+        var littleEndian = value.littleEndian
+        return Data(bytes: &littleEndian, count: 4)
     }
-    private static func uint16LE(_ v: UInt16) -> Data {
-        var x = v.littleEndian
-        return Data(bytes: &x, count: 2)
+
+    private static func uint16LE(_ value: UInt16) -> Data {
+        var littleEndian = value.littleEndian
+        return Data(bytes: &littleEndian, count: 2)
+    }
+}
+
+enum WAVWriter {
+    /// Write Float32 mono samples as 16-bit PCM WAV to `path`.
+    static func write(samples: [Float], sampleRate: Int, to path: String) throws {
+        try WAVEncoder.data(samples: samples, sampleRate: sampleRate)
+            .write(to: URL(fileURLWithPath: path))
     }
 }
 
